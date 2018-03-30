@@ -3325,6 +3325,20 @@ sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 }
 
 static const struct bpf_func_proto *
+sock_addr_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	switch (func_id) {
+	/* inet and inet6 sockets are created in a process
+	 * context so there is always a valid uid/gid
+	 */
+	case BPF_FUNC_get_current_uid_gid:
+		return &bpf_get_current_uid_gid_proto;
+	default:
+		return bpf_base_func_proto(func_id);
+	}
+}
+
+static const struct bpf_func_proto *
 sk_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
@@ -3846,7 +3860,6 @@ static bool sock_addr_is_valid_access(int off, int size,
 	case bpf_ctx_range(struct bpf_sock_addr, user_ip4):
 		switch (prog->expected_attach_type) {
 		case BPF_CGROUP_INET4_BIND:
-		case BPF_CGROUP_INET4_CONNECT:
 			break;
 		default:
 			return false;
@@ -3855,11 +3868,6 @@ static bool sock_addr_is_valid_access(int off, int size,
 	case bpf_ctx_range_till(struct bpf_sock_addr, user_ip6[0], user_ip6[3]):
 		switch (prog->expected_attach_type) {
 		case BPF_CGROUP_INET6_BIND:
-		case BPF_CGROUP_INET6_CONNECT:
-			break;
-		default:
-			return false;
-		}
 		break;
 	}
 
