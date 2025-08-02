@@ -1649,6 +1649,11 @@ extern struct dentry *vfs_tmpfile(struct dentry *dentry, umode_t mode,
 /*
  * VFS file helper functions.
  */
+ 
+int vfs_mkobj(struct dentry *, umode_t,
+		int (*f)(struct dentry *, umode_t, void *),
+		void *);
+ 
 extern void inode_init_owner(struct inode *inode, const struct inode *dir,
 			umode_t mode);
 extern bool may_open_dev(const struct path *path);

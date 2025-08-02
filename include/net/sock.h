@@ -234,6 +234,9 @@ struct sock_common {
 struct bpf_local_storage;
 struct bpf_sk_storage;
 
+#ifndef SK_SECURITY_STRUCT_H
+#define SK_SECURITY_STRUCT_H
+
 struct sk_security_struct {
 #ifdef CONFIG_NETLABEL
 	enum {				/* NetLabel state */
@@ -253,6 +256,8 @@ struct sk_security_struct {
 		SCTP_ASSOC_SET,
 	} sctp_assoc_state;
 };
+
+#endif
 
 /**
   *	struct sock - network layer representation of sockets

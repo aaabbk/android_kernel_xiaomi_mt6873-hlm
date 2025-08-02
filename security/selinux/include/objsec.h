@@ -116,6 +116,9 @@ struct netport_security_struct {
 	u8 protocol;			/* transport protocol */
 };
 
+#ifndef SK_SECURITY_STRUCT_H
+#define SK_SECURITY_STRUCT_H
+
 struct sk_security_struct {
 #ifdef CONFIG_NETLABEL
 	enum {				/* NetLabel state */
@@ -131,6 +134,8 @@ struct sk_security_struct {
 	u32 peer_sid;			/* SID of peer */
 	u16 sclass;			/* sock security class */
 };
+
+#endif
 
 struct tun_security_struct {
 	u32 sid;			/* SID for the tun device sockets */
