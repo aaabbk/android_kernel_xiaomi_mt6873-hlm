@@ -34,6 +34,19 @@ atomic_t vol_down_long_press_flag = ATOMIC_INIT(0);
 
 int kpd_klog_en;
 void __iomem *kp_base;
+
+#ifdef CONFIG_MTK_DEBUG_POWER_PANIC
+/* Power key panic debug feature */
+int mtk_debug_power_panic_enabled = 1;
+module_param(mtk_debug_power_panic_enabled, int, 0644);
+MODULE_PARM_DESC(mtk_debug_power_panic_enabled, "Enable power key panic debug feature");
+
+static void panic_outmesg(void)
+{
+	panic("A panic hot restart has been triggered by power key");
+}
+#endif
+
 static unsigned int kp_irqnr;
 struct input_dev *kpd_input_dev;
 static struct dentry *kpd_droot;
@@ -156,6 +169,11 @@ void vol_down_long_press(unsigned long pressed)
 void kpd_pwrkey_pmic_handler(unsigned long pressed)
 {
 	kpd_print("Power Key generate, pressed=%ld\n", pressed);
+#ifdef CONFIG_MTK_DEBUG_POWER_PANIC
+	if (pressed && mtk_debug_power_panic_enabled) {
+		panic_outmesg();
+	}
+#endif
 	if (!kpd_input_dev) {
 		kpd_print("KPD input device not ready\n");
 		return;

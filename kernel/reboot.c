@@ -16,7 +16,6 @@
 #include <linux/syscalls.h>
 #include <linux/syscore_ops.h>
 #include <linux/uaccess.h>
-#include <linux/delay.h>   /* 新增：用于 mdelay */
 
 /*
  * this indicates whether you can reboot with ctrl-alt-del: the default is yes
@@ -214,15 +213,6 @@ void migrate_to_reboot_cpu(void)
  */
 void kernel_restart(char *cmd)
 {
-	/* 第一步：强制 dump 所有日志到 pstore/ramoops */
-	kmsg_dump(KMSG_DUMP_RESTART);
-
-	/* 如果是进 fastboot，额外等待一下确保写入完成 */
-	if (cmd && strcmp(cmd, "fastboot") == 0) {
-		pr_emerg("Fastboot reboot detected, delaying 200ms for pstore write\n");
-		mdelay(200);
-	}
-
 	kernel_restart_prepare(cmd);
 	migrate_to_reboot_cpu();
 	syscore_shutdown();
@@ -230,11 +220,14 @@ void kernel_restart(char *cmd)
 		pr_emerg("Restarting system\n");
 	else
 		pr_emerg("Restarting system with command '%s'\n", cmd);
+
 	pr_emerg("-------kernel_restart-------\n");
 	pr_emerg("%s, current pid: %d, thread name:%s\n", __func__, current->pid, current->comm);
 	pr_emerg("%s, real parent pid: %d, real parent thread name:%s\n", __func__, current->real_parent->pid, current->real_parent->comm);
 	pr_emerg("%s,      parent pid: %d,      parent thread name:%s\n", __func__, current->parent->pid, current->parent->comm);
 
+
+	kmsg_dump(KMSG_DUMP_RESTART);
 	machine_restart(cmd);
 }
 EXPORT_SYMBOL_GPL(kernel_restart);
@@ -254,14 +247,11 @@ static void kernel_shutdown_prepare(enum system_states state)
  */
 void kernel_halt(void)
 {
-	/* 第一步：强制 dump 日志 */
-	kmsg_dump(KMSG_DUMP_HALT);
-	mdelay(100);
-
 	kernel_shutdown_prepare(SYSTEM_HALT);
 	migrate_to_reboot_cpu();
 	syscore_shutdown();
 	pr_emerg("System halted\n");
+	kmsg_dump(KMSG_DUMP_HALT);
 	machine_halt();
 }
 EXPORT_SYMBOL_GPL(kernel_halt);
@@ -273,16 +263,13 @@ EXPORT_SYMBOL_GPL(kernel_halt);
  */
 void kernel_power_off(void)
 {
-	/* 第一步：强制 dump 日志 */
-	kmsg_dump(KMSG_DUMP_POWEROFF);
-	mdelay(100);
-
 	kernel_shutdown_prepare(SYSTEM_POWER_OFF);
 	if (pm_power_off_prepare)
 		pm_power_off_prepare();
 	migrate_to_reboot_cpu();
 	syscore_shutdown();
 	pr_emerg("Power down\n");
+	kmsg_dump(KMSG_DUMP_POWEROFF);
 	machine_power_off();
 }
 EXPORT_SYMBOL_GPL(kernel_power_off);

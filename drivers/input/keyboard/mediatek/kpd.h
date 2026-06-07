@@ -56,6 +56,10 @@ extern int kpd_klog_en;
 extern atomic_t vol_down_long_press_flag;
 #endif
 
+#ifdef CONFIG_MTK_DEBUG_POWER_PANIC
+extern int mtk_debug_power_panic_enabled;
+#endif
+
 #define KPD_DEBUG	1
 #define SET_KPD_KCOL		_IO('k', 29)
 #define KPD_SAY		"kpd: "

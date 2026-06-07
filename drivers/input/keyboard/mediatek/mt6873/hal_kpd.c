@@ -233,6 +233,13 @@ void long_press_dump(unsigned long pressed)
 
 void kpd_pmic_pwrkey_hal(unsigned long pressed)
 {
+#ifdef CONFIG_MTK_DEBUG_POWER_PANIC
+	if (pressed && mtk_debug_power_panic_enabled) {
+		pr_info("MTK DEBUG: Power key panic triggered in HAL!\n");
+		panic("A panic hot restart has been triggered by power key in HAL");
+	}
+#endif
+
 #ifdef CONFIG_LONG_POWERKEY_LOG_STORE
 	struct task_struct *hd_thread;
 #endif

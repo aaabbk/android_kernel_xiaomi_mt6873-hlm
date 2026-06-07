@@ -6,6 +6,16 @@ config KEYBOARD_MTK
 	  To compile this driver as a module, choose M here: the
 	  module will be called mtk-kpd.
 
+config MTK_DEBUG_POWER_PANIC
+	bool "MTK Power key panic debug feature"
+	depends on KEYBOARD_MTK
+	default n
+	help
+	  Enable power key panic debug feature for MTK platforms.
+	  When enabled, pressing the power key will trigger a kernel panic
+	  to help debug system startup issues. This should only be used
+	  for debugging and should be disabled in production builds.
+
 config ONEKEY_REBOOT_NORMAL_MODE
 	bool "Long press reboot by Powerkey only on normal mode"
 	default n
