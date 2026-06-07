@@ -6,15 +6,16 @@ config KEYBOARD_MTK
 	  To compile this driver as a module, choose M here: the
 	  module will be called mtk-kpd.
 
-config MTK_DEBUG_POWER_PANIC
-	bool "MTK Power key panic debug feature"
+config MTK_VOLUP_LONG_PRESS_PANIC
+	bool "MTK Volume Up long press panic debug feature"
 	depends on KEYBOARD_MTK
 	default n
 	help
-	  Enable power key panic debug feature for MTK platforms.
-	  When enabled, pressing the power key will trigger a kernel panic
-	  to help debug system startup issues. This should only be used
-	  for debugging and should be disabled in production builds.
+	  Enable Volume Up key long press panic debug feature for MTK platforms.
+	  When enabled, pressing and holding the Volume Up key for 10 seconds
+	  will trigger a kernel panic. This is useful for debugging system
+	  startup issues such as GSI ROM stuck at logo, and will preserve
+	  dmesg logs via ramoops/pstore. Should be disabled in production.
 
 config ONEKEY_REBOOT_NORMAL_MODE
 	bool "Long press reboot by Powerkey only on normal mode"
@@ -79,7 +80,6 @@ config KPD_PWRKEY_USE_PMIC
 	  To compile this driver as a module, choose M here: the
 	  module will be called kpd_pmic_pwrkey_hal.
 
-
 config MTK_MRDUMP_KEY
 	bool "MediaTek mrdump reset key support"
 	default n
@@ -92,7 +92,6 @@ config MTK_MRDUMP_KEY
 	  and used for debug purpose. The circuit layout must
 	  have phyiscal eint-rst-key key on the main board.
 
-
 config LONG_PRESS_MODE_EN
 	bool "MediaTek dump reset key support"
 	default n
@@ -101,5 +100,5 @@ config LONG_PRESS_MODE_EN
 
 	  If you don't know what to do here, say N.
 
-	  The memory dump key includes power key,homerst key and
-	  volume down key,and used for debug purpose.
+	  The memory dump key includes power key, homerest key and
+	  volume down key, and used for debug purpose.
