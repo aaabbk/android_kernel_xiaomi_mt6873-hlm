@@ -106,9 +106,8 @@ _get_session_sync_info(unsigned int session_id)
 
 	for (i = 0; i < ARRAY_SIZE(_mtk_fence_context); i++) {
 		if (_mtk_fence_context[i].session_id == 0xffffffff) {
-			DDPPR_ERR(
-				"not found session info for session_id:0x%08x,insert %p to array index:%d\n",
-				session_id, &(_mtk_fence_context[i]), i);
+           DDPINFO("%s: creating new session 0x%08x at slot %d\n",
+                     __func__, session_id, i);
 			_mtk_fence_context[i].session_id = session_id;
 			session_info = &(_mtk_fence_context[i]);
 
@@ -527,30 +526,61 @@ void mtk_release_layer_fence(unsigned int session_id, unsigned int layer_id)
 int mtk_release_present_fence(unsigned int session_id, unsigned int fence_idx)
 {
 	struct mtk_fence_info *layer_info = NULL;
-	unsigned int timeline_id = 0;
+	struct mtk_fence_session_sync_info *session_info = NULL;
+	unsigned int timeline_id;
 	int fence_increment = 0;
 	unsigned int idx;
 
 	timeline_id = mtk_fence_get_present_timeline_id(session_id);
-	layer_info = _disp_sync_get_sync_info(session_id, timeline_id);
-	if (layer_info == NULL) {
-		if (printk_ratelimit())
-			DDPPR_ERR("%s:%d layer_info is null\n", __func__, __LINE__);
+	if (timeline_id >= MTK_TIMELINE_COUNT) {
+		DDPPR_ERR("%s: invalid timeline_id=%d (MAX=%d) for session 0x%x\n",
+			__func__, timeline_id, MTK_TIMELINE_COUNT, session_id);
 		return -1;
+	}
+
+	// 关键：使用 _get_session_sync_info 确保 session 存在
+	session_info = _get_session_sync_info(session_id);
+	if (!session_info) {
+		DDPPR_ERR("%s: failed to get session info for 0x%x\n", __func__, session_id);
+		return -1;
+	}
+
+	layer_info = &session_info->session_layer_info[timeline_id];
+
+	// 如果该 timeline 尚未初始化，立即初始化
+	if (!layer_info->inited) {
+		DDPINFO("%s: init timeline %d on demand (session 0x%x, fence_idx=%d)\n",
+			__func__, timeline_id, session_id, fence_idx);
+		mutex_init(&layer_info->sync_lock);
+		layer_info->layer_id = timeline_id;
+		layer_info->fence_idx = 0;
+		layer_info->timeline_idx = 0;
+		layer_info->inc = 0;
+		layer_info->cur_idx = 0;
+		layer_info->timeline = mtk_sync_timeline_create("present_timeline");
+		if (!layer_info->timeline) {
+			DDPPR_ERR("%s: failed to create timeline for %d\n", __func__, timeline_id);
+			return -1;
+		}
+		layer_info->inited = 1;
+		INIT_LIST_HEAD(&layer_info->buf_list);
 	}
 
 	mutex_lock(&layer_info->sync_lock);
 
 	fence_increment = fence_idx - layer_info->timeline->value;
-
-	if (fence_increment <= 0)
+	if (fence_increment <= 0) {
+		DDPFENCE("Skip present fence release: inc=%d, timeline_val=%d, fence_idx=%d\n",
+			fence_increment, layer_info->timeline->value, fence_idx);
 		goto done;
+	}
 
-	if (fence_increment >= 2)
+	if (fence_increment >= 2) {
 		DDPFENCE("Warning, R/%s%d/L%d/timeline idx:%d/fence:%d\n",
 			 mtk_fence_session_mode_spy(session_id),
 			 MTK_SESSION_DEV(session_id), timeline_id,
 			 layer_info->timeline->value, fence_idx);
+	}
 
 	mtk_drm_trace_begin("present_fence_rel:%s-%d",
 		mtk_fence_session_mode_spy(session_id), fence_idx);
@@ -566,7 +596,6 @@ int mtk_release_present_fence(unsigned int session_id, unsigned int fence_idx)
 		idx = 1;
 	else
 		idx = 2;
-
 	CRTC_MMP_MARK(idx, release_present_fence, 0, fence_idx);
 
 	mtk_drm_trace_end();
