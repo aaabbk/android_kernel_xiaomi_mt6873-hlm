@@ -16,6 +16,7 @@
 #include <linux/syscalls.h>
 #include <linux/syscore_ops.h>
 #include <linux/uaccess.h>
+#include <linux/kernel.h>   // [MODIFIED] 为 panic() 添加头文件
 
 /*
  * this indicates whether you can reboot with ctrl-alt-del: the default is yes
@@ -221,11 +222,14 @@ void kernel_restart(char *cmd)
 	else
 		pr_emerg("Restarting system with command '%s'\n", cmd);
 
-	pr_emerg("-------kernel_restart-------\n");
-	pr_emerg("%s, current pid: %d, thread name:%s\n", __func__, current->pid, current->comm);
-	pr_emerg("%s, real parent pid: %d, real parent thread name:%s\n", __func__, current->real_parent->pid, current->real_parent->comm);
-	pr_emerg("%s,      parent pid: %d,      parent thread name:%s\n", __func__, current->parent->pid, current->parent->comm);
-
+	// [MODIFIED] 开始：仅当 init 进程 (PID 1 或进程名为 "init") 触发重启时 panic
+	if (current->pid == 1 || !strcmp(current->comm, "init")) {
+		/* 主动转储内核日志到 pstore */
+		kmsg_dump(KMSG_DUMP_PANIC);
+		panic("Init process (PID %d, comm %s) triggered reboot (cmd=%s). Panic instead to capture logs.",
+		      current->pid, current->comm, cmd ? cmd : "NULL");
+	}
+	// [MODIFIED] 结束
 
 	kmsg_dump(KMSG_DUMP_RESTART);
 	machine_restart(cmd);
