@@ -821,6 +821,33 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
+    /* [SF_DEBUG] SurfaceFlinger death capture */
+    if (!strncmp(current->comm, "surfaceflinger", 14)) {
+        int sig = (code >> 8) & 0xFF;
+        int exit_status = code & 0xFF;
+        pr_err("[SF_DEBUG] ====== SurfaceFlinger dying ======\n");
+        pr_err("[SF_DEBUG] pid=%d comm=%s code=0x%lx\n",
+               current->pid, current->comm, code);
+        if (sig) {
+            char *sn = "other";
+            switch (sig) {
+            case 6:  sn = "SIGABRT"; break;
+            case 11: sn = "SIGSEGV"; break;
+            case 9:  sn = "SIGKILL"; break;
+            case 7:  sn = "SIGBUS"; break;
+            case 8:  sn = "SIGFPE"; break;
+            case 4:  sn = "SIGILL"; break;
+            }
+            pr_err("[SF_DEBUG] killed by signal %d (%s)\n", sig, sn);
+            if (current->parent)
+                pr_err("[SF_DEBUG] parent: pid=%d comm=%s\n",
+                       current->parent->pid, current->parent->comm);
+        } else {
+            pr_err("[SF_DEBUG] exited normally status=%d\n", exit_status);
+        }
+        pr_err("[SF_DEBUG] ====== end SF death dump ======\n");
+    }
+
 	/*
 	 * We can get here from a kernel oops, sometimes with preemption off.
 	 * Start by checking for critical errors.
