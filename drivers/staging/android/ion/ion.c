@@ -641,6 +641,14 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 	if (heap_id_mask == heap_mask)
 		heap_id_mask = ION_HEAP_MULTIMEDIA_MASK;
 
+	/* [FIX] ION_HEAP_TYPE_FB (id=11) not registered on this board,
+	 * gralloc HAL requests ION_HEAP_FB_MASK (0x800) but no fb heap
+	 * exists. Fallback to ion_mm_heap to fix SurfaceFlinger init
+	 * failure and boot hang.
+	 */
+	if (heap_id_mask == ION_HEAP_FB_MASK)
+		heap_id_mask = ION_HEAP_MULTIMEDIA_MASK;
+
 	/*
 	 * traverse the list of heaps available in this system in priority
 	 * order.  If the heap type is supported by the client, and matches the
