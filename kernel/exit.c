@@ -67,6 +67,9 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
+#include <linux/string.h>
+#include <asm/ptrace.h>
+#include <linux/mmu_context.h>
 #include <asm/mmu_context.h>
 
 /*
@@ -821,31 +824,106 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
-    /* [SF_DEBUG] SurfaceFlinger death capture */
+    /* [SF_DEBUG] SurfaceFlinger death capture v2 */
     if (!strncmp(current->comm, "surfaceflinger", 14)) {
-        int sig = (code >> 8) & 0xFF;
-        int exit_status = code & 0xFF;
-        pr_err("[SF_DEBUG] ====== SurfaceFlinger dying ======\n");
-        pr_err("[SF_DEBUG] pid=%d comm=%s code=0x%lx\n",
-               current->pid, current->comm, code);
-        if (sig) {
-            char *sn = "other";
+        if (code < 0x100) {
+            /* killed by signal: code == signal number */
+            int sig = (int)code;
+            char *sn = "unknown";
+            struct pt_regs *regs;
+
             switch (sig) {
-            case 6:  sn = "SIGABRT"; break;
-            case 11: sn = "SIGSEGV"; break;
-            case 9:  sn = "SIGKILL"; break;
-            case 7:  sn = "SIGBUS"; break;
-            case 8:  sn = "SIGFPE"; break;
-            case 4:  sn = "SIGILL"; break;
+            case 6:  sn = "SIGABRT(abort)"; break;
+            case 11: sn = "SIGSEGV(segfault)"; break;
+            case 9:  sn = "SIGKILL(killed)"; break;
+            case 7:  sn = "SIGBUS(bus error)"; break;
+            case 8:  sn = "SIGFPE(arithmetic)"; break;
+            case 4:  sn = "SIGILL(illegal)"; break;
+            case 5:  sn = "SIGTRAP(trap)"; break;
             }
-            pr_err("[SF_DEBUG] killed by signal %d (%s)\n", sig, sn);
+
+            pr_err("[SF_DEBUG] ====== SurfaceFlinger CRASHED ======\n");
+            pr_err("[SF_DEBUG] killed by signal %d: %s, pid=%d\n",
+                   sig, sn, current->pid);
+
+            regs = task_pt_regs(current);
+            if (regs) {
+                struct vm_area_struct *vma_pc, *vma_lr;
+                unsigned long offset_pc = 0, offset_lr = 0;
+                char *file_pc = "??", *file_lr = "??";
+
+                pr_err("[SF_DEBUG] user PC=0x%llx LR=0x%llx SP=0x%llx\n",
+                       regs->pc, regs->regs[30], regs->sp);
+
+                if (current->mm) {
+                    down_read(&current->mm->mmap_sem);
+                    vma_pc = find_vma(current->mm, regs->pc);
+                    if (vma_pc && vma_pc->vm_file) {
+                        offset_pc = regs->pc - vma_pc->vm_start +
+                                    (vma_pc->vm_pgoff << PAGE_SHIFT);
+                        file_pc = (char *)vma_pc->vm_file->f_path.dentry->d_name.name;
+                    }
+                    vma_lr = find_vma(current->mm, regs->regs[30]);
+                    if (vma_lr && vma_lr->vm_file) {
+                        offset_lr = regs->regs[30] - vma_lr->vm_start +
+                                    (vma_lr->vm_pgoff << PAGE_SHIFT);
+                        file_lr = (char *)vma_lr->vm_file->f_path.dentry->d_name.name;
+                    }
+                    up_read(&current->mm->mmap_sem);
+                }
+
+                pr_err("[SF_DEBUG] PC in %s+0x%lx\n", file_pc, offset_pc);
+                pr_err("[SF_DEBUG] LR in %s+0x%lx\n", file_lr, offset_lr);
+
+                /* Walk user stack frames via FP (x29) */
+                {
+                    unsigned long fp = regs->regs[29];
+                    int i;
+
+                    pr_err("[SF_DEBUG] user backtrace:\n");
+                    for (i = 0; i < 16 && fp; i++) {
+                        unsigned long next_fp = 0, pc = 0;
+                        struct vm_area_struct *vma;
+
+                        if (access_process_vm(current, fp,
+                                &next_fp, sizeof(next_fp), 0) != sizeof(next_fp))
+                            break;
+                        if (access_process_vm(current, fp + 8,
+                                &pc, sizeof(pc), 0) != sizeof(pc))
+                            break;
+                        if (!pc)
+                            break;
+
+                        file_pc = "??";
+                        offset_pc = 0;
+                        if (current->mm) {
+                            down_read(&current->mm->mmap_sem);
+                            vma = find_vma(current->mm, pc);
+                            if (vma && vma->vm_file) {
+                                offset_pc = pc - vma->vm_start +
+                                            (vma->vm_pgoff << PAGE_SHIFT);
+                                file_pc = (char *)vma->vm_file->f_path.dentry->d_name.name;
+                            }
+                            up_read(&current->mm->mmap_sem);
+                        }
+
+                        pr_err("[SF_DEBUG]   [%d] %s+0x%lx (pc=0x%lx)\n",
+                               i, file_pc, offset_pc, pc);
+                        fp = next_fp;
+                    }
+                }
+            }
+
             if (current->parent)
                 pr_err("[SF_DEBUG] parent: pid=%d comm=%s\n",
                        current->parent->pid, current->parent->comm);
+
+            pr_err("[SF_DEBUG] ====== end crash dump ======\n");
         } else {
-            pr_err("[SF_DEBUG] exited normally status=%d\n", exit_status);
+            /* normal exit: exit_status = code >> 8 */
+            pr_err("[SF_DEBUG] SurfaceFlinger exited normally, code=%d, pid=%d\n",
+                   (int)(code >> 8), current->pid);
         }
-        pr_err("[SF_DEBUG] ====== end SF death dump ======\n");
     }
 
 	/*
