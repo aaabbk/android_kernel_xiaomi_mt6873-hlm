@@ -258,6 +258,7 @@ extern void scp_enable_sram(void);
 extern int scp_sys_full_reset(void);
 extern void scp_reset_awake_counts(void);
 extern void scp_awake_init(void);
+void scp_wdt_reset(int cpu_id);
 
 #if SCP_RECOVERY_SUPPORT
 extern unsigned int scp_reset_by_cmd;
