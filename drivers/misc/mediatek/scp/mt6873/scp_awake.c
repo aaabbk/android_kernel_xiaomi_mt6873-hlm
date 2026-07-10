@@ -76,6 +76,11 @@ int scp_awake_lock(void *_scp_id)
 		return ret;
 	}
 
+	if (!scpreg.scpsys) {
+		pr_notice("%s: scpsys not mapped, skip awake lock\n", __func__);
+		return ret;
+	}
+
 	/* scp unlock awake */
 	spin_lock_irqsave(&scp_awake_spinlock, spin_flags);
 	if (*scp_awake_count > 0) {
@@ -163,6 +168,11 @@ int scp_awake_unlock(void *_scp_id)
 
 	if (is_scp_ready(scp_id) == 0) {
 		pr_notice("%s: %s not enabled\n", __func__, core_id);
+		return -1;
+	}
+
+	if (!scpreg.scpsys) {
+		pr_notice("%s: scpsys not mapped, skip awake unlock\n", __func__);
 		return -1;
 	}
 
