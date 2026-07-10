@@ -1,6 +1,5 @@
 /*
  * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -19,14 +18,14 @@
 /* scp platform configs*/
 #define SCP_BOOT_TIME_OUT_MONITOR        (1)
 #define SCP_RESERVED_MEM                 (1)
+#ifdef CONFIG_MTK_TINYSYS_SCP_LOGGER_SUPPORT
 #define SCP_LOGGER_ENABLE                (1)
-#define SCP_LOGGER_OVERWRITE             (1)
+#else
+#define SCP_LOGGER_ENABLE                (0)
+#endif
 #define SCP_DVFS_INIT_ENABLE             (1)
 #define SCP_VOW_LOW_POWER_MODE           (1)
 
-#ifdef SCP_LOGGER_OVERWRITE
-#define HW_SEM_LOGGER                    (1)
-#endif
 
 /* scp rescovery feature option*/
 #define SCP_RECOVERY_SUPPORT             (1)
@@ -42,7 +41,11 @@
 #define SCP_REGISTER_SUB_SENSOR          (1)
 
 /* emi mpu define*/
+#ifdef CONFIG_MEDIATEK_EMI
 #define ENABLE_SCP_EMI_PROTECTION        (1)
+#else
+#define ENABLE_SCP_EMI_PROTECTION        (0)
+#endif
 
 #define MPU_REGION_ID_SCP_SMEM           7
 #define MPU_DOMAIN_D0                    0
@@ -65,6 +68,9 @@ enum feature_id {
 	VOW_VENDOR_M_FEATURE_ID,
 	VOW_VENDOR_A_FEATURE_ID,
 	VOW_VENDOR_G_FEATURE_ID,
+	VOW_DUAL_MIC_FEATURE_ID,
+	VOW_DUAL_MIC_BARGE_IN_FEATURE_ID,
+	ULTRA_FEATURE_ID,
 	NUM_FEATURE_ID,
 };
 

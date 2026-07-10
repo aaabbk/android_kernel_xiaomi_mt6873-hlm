@@ -79,6 +79,7 @@ unsigned int scp_enable[SCP_CORE_TOTAL];
 /* scp dvfs variable*/
 unsigned int scp_expected_freq;
 unsigned int scp_current_freq;
+unsigned int scp_dvfs_cali_ready;
 
 /*scp awake variable*/
 int scp_awake_counts[SCP_CORE_TOTAL];
@@ -217,19 +218,20 @@ void memcpy_from_scp(void *trg, const void __iomem *src, int size)
 /*
  * acquire a hardware semaphore
  * @param flag: semaphore id
- * return  1 :get sema success
- *        -1 :get sema timeout
+ * return  0 :get sema success
+ *         1 :get sema timeout
+ *        -1 :get sema fail, driver not ready
  */
 int get_scp_semaphore(int flag)
 {
 	int read_back;
-	int count = 0;
-	int ret = -1;
+	unsigned int cnt;
+	int ret = SEMAPHORE_FAIL;
 	unsigned long spin_flags;
 
-	/* return 1 to prevent from access when driver not ready */
+	/* return -1 to prevent from access when driver not ready */
 	if (!driver_init_done)
-		return -1;
+		return SEMAPHORE_NOT_INIT;
 
 	/* spinlock context safe*/
 	spin_lock_irqsave(&scp_awake_spinlock, spin_flags);
@@ -239,23 +241,23 @@ int get_scp_semaphore(int flag)
 	read_back = (readl(SCP_SEMAPHORE) >> flag) & 0x1;
 
 	if (read_back == 0) {
+		cnt = SEMAPHORE_TIMEOUT;
 		writel((1 << flag), SCP_SEMAPHORE);
 
-		while (count != SEMAPHORE_TIMEOUT) {
+		while (cnt-- > 0) {
 			/* repeat test if we get semaphore */
 			read_back = (readl(SCP_SEMAPHORE) >> flag) & 0x1;
 			if (read_back == 1) {
-				ret = 1;
+				ret = SEMAPHORE_SUCCESS;
 				break;
 			}
 			writel((1 << flag), SCP_SEMAPHORE);
-			count++;
 		}
 
-		if (ret < 0)
-			pr_debug("[SCP] get scp sema. %d TIMEOUT...!\n", flag);
+		if (ret == SEMAPHORE_FAIL)
+			pr_notice("[SCP] get scp sema. %d TIMEOUT...!\n", flag);
 	} else {
-		pr_err("[SCP] already hold scp sema. %d\n", flag);
+		pr_notice("[SCP] already hold scp sema. %d\n", flag);
 	}
 
 	spin_unlock_irqrestore(&scp_awake_spinlock, spin_flags);
@@ -267,18 +269,19 @@ EXPORT_SYMBOL_GPL(get_scp_semaphore);
 /*
  * release a hardware semaphore
  * @param flag: semaphore id
- * return  1 :release sema success
- *        -1 :release sema fail
+ * return  0 :release sema success
+ *         1 :release sema fail
+ *        -1 :release sema fail, driver not ready
  */
 int release_scp_semaphore(int flag)
 {
 	int read_back;
-	int ret = -1;
+	int ret = SEMAPHORE_FAIL;
 	unsigned long spin_flags;
 
-	/* return 1 to prevent from access when driver not ready */
+	/* return -1 to prevent from access when driver not ready */
 	if (!driver_init_done)
-		return -1;
+		return SEMAPHORE_NOT_INIT;
 
 	/* spinlock context safe*/
 	spin_lock_irqsave(&scp_awake_spinlock, spin_flags);
@@ -291,11 +294,11 @@ int release_scp_semaphore(int flag)
 		writel((1 << flag), SCP_SEMAPHORE);
 		read_back = (readl(SCP_SEMAPHORE) >> flag) & 0x1;
 		if (read_back == 0)
-			ret = 1;
+			ret = SEMAPHORE_SUCCESS;
 		else
-			pr_debug("[SCP] release scp sema. %d failed\n", flag);
+			pr_notice("[SCP] release scp sema. %d failed\n", flag);
 	} else {
-		pr_err("[SCP] try to release sema. %d not own by me\n", flag);
+		pr_notice("[SCP] try to release sema. %d not own by me\n", flag);
 	}
 
 	spin_unlock_irqrestore(&scp_awake_spinlock, spin_flags);
@@ -304,6 +307,94 @@ int release_scp_semaphore(int flag)
 }
 EXPORT_SYMBOL_GPL(release_scp_semaphore);
 
+/*
+ * acquire a hardware semaphore
+ * @param flag: semaphore id
+ * return 0: get sema success
+ *        1: get sema timeout
+ *       -1: get sema fail, driver not ready
+ */
+int scp_get_semaphore_3way(int flag)
+{
+	int ret = SEMAPHORE_FAIL;
+	unsigned int cnt;
+	unsigned long spin_flags;
+	unsigned int read_back;
+
+	/* return -1 to prevent from access when driver not ready */
+	if (!driver_init_done)
+		return SEMAPHORE_NOT_INIT;
+
+	/* spinlock context safe*/
+	spin_lock_irqsave(&scp_awake_spinlock, spin_flags);
+
+	flag = flag * 4 + 2;
+
+	read_back = (readl(SCP_3WAY_SEMAPHORE) >> flag) & 0x1;
+	if (read_back == 0) {
+		cnt = SEMAPHORE_3WAY_TIMEOUT;
+
+		while (cnt-- > 0) {
+			writel((1 << flag), SCP_3WAY_SEMAPHORE);
+
+			read_back = (readl(SCP_3WAY_SEMAPHORE) >> flag) & 0x1;
+			if (read_back == 1) {
+				ret = SEMAPHORE_SUCCESS;
+				break;
+			}
+
+		}
+		if (ret == SEMAPHORE_FAIL)
+			pr_notice("[SCP] get scp sema. %d TIMEOUT...!\n", flag);
+	} else {
+		pr_notice("[SCP] already hold scp sema. %d\n", flag);
+	}
+
+	spin_unlock_irqrestore(&scp_awake_spinlock, spin_flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(scp_get_semaphore_3way);
+
+/*
+ * release a hardware semaphore
+ * @param flag: semaphore id
+ * return 0: release sema success
+ *        1: release sema fail, sem busy
+ *       -1: release sema fail, driver not ready
+ */
+int scp_release_semaphore_3way(int flag)
+{
+	int ret = SEMAPHORE_FAIL;
+	unsigned long spin_flags;
+	unsigned int read_back;
+
+	/* return -1 to prevent from access when driver not ready */
+	if (!driver_init_done)
+		return SEMAPHORE_NOT_INIT;
+
+	/* spinlock context safe*/
+	spin_lock_irqsave(&scp_awake_spinlock, spin_flags);
+
+	flag = flag * 4 + 2;
+
+	read_back = (readl(SCP_3WAY_SEMAPHORE) >> flag) & 0x1;
+	if (read_back == 1) {
+		writel((1 << flag), SCP_3WAY_SEMAPHORE);
+		read_back = (readl(SCP_3WAY_SEMAPHORE) >> flag) & 0x1;
+		if (read_back == 0)
+			ret = SEMAPHORE_SUCCESS;
+		else
+			pr_notice("[SCP] release scp sema. %d failed\n", flag);
+	} else {
+		pr_notice("[SCP] try to release sema. %d not own by me\n", flag);
+	}
+
+	spin_unlock_irqrestore(&scp_awake_spinlock, spin_flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(scp_release_semaphore_3way);
 
 static BLOCKING_NOTIFIER_HEAD(scp_A_notifier_list);
 /*
@@ -393,6 +484,7 @@ static void scp_A_notify_ws(struct work_struct *ws)
 		scp_pll_ctrl_set(PLL_DISABLE, CLK_26M);
 #endif
 
+		scp_dvfs_cali_ready = 1;
 		pr_debug("[SCP] notify blocking call\n");
 		blocking_notifier_call_chain(&scp_A_notifier_list
 			, SCP_EVENT_READY, NULL);
@@ -889,37 +981,6 @@ DEVICE_ATTR(recovery_flag, 0600, scp_recovery_flag_r, scp_recovery_flag_w);
 
 #endif
 
-
-/******************************************************************************
- *****************************************************************************/
-static ssize_t scp_set_log_filter(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	int ret;
-	uint32_t filter;
-
-	if (sscanf(buf, "0x%08x", &filter) != 1)
-		return -EINVAL;
-
-	ret = mtk_ipi_send(&scp_ipidev, IPI_OUT_SCP_LOG_FILTER_1, 0, &filter,
-			   PIN_OUT_SIZE_SCP_LOG_FILTER_1, 0);
-	switch (ret) {
-	case IPI_ACTION_DONE:
-		pr_notice("[SCP] Set log filter to 0x%08x\n", filter);
-		return count;
-
-	case IPI_PIN_BUSY:
-		pr_notice("[SCP] IPI busy. Set log filter failed!\n");
-		return -EBUSY;
-
-	default:
-		pr_notice("[SCP] IPI error. Set log filter failed!\n");
-		return -EIO;
-	}
-}
-DEVICE_ATTR(log_filter, 0200, NULL, scp_set_log_filter);
-
-
 /******************************************************************************
  *****************************************************************************/
 static struct miscdevice scp_device = {
@@ -1180,6 +1241,12 @@ void scp_register_feature(enum feature_id id)
 			scp_ready[SCP_A_ID]);
 		return;
 	}
+	/* prevent from access when scp dvfs cali isn't done */
+	if (!scp_dvfs_cali_ready) {
+		pr_debug("[SCP] %s: dvfs cali not ready, scp_dvfs_cali=%u\n",
+		__func__, scp_dvfs_cali_ready);
+		return;
+	}
 
 	/* because feature_table is a global variable,
 	 * use mutex lock to protect it from accessing in the same time
@@ -1226,6 +1293,12 @@ void scp_deregister_feature(enum feature_id id)
 	if (!scp_ready[SCP_A_ID]) {
 		pr_debug("[SCP] %s:not ready, scp=%u\n", __func__,
 			scp_ready[SCP_A_ID]);
+		return;
+	}
+	/* prevent from access when scp dvfs cali isn't done */
+	if (!scp_dvfs_cali_ready) {
+		pr_debug("[SCP] %s: dvfs cali not ready, scp_dvfs_cali=%u\n",
+		__func__, scp_dvfs_cali_ready);
 		return;
 	}
 
@@ -1418,8 +1491,11 @@ void scp_reset_wait_timeout(void)
 		mdelay(20);
 	}
 
-	if (timeout == 0)
+	if (timeout < 0) {
 		pr_notice("[SCP] reset timeout, still reset scp\n");
+		pr_notice("[SCP] core0_status = %x, core1_status = %x\n",
+		readl(R_CORE0_STATUS), readl(R_CORE1_STATUS));
+	}
 
 }
 
@@ -1446,6 +1522,7 @@ void scp_sys_reset_ws(struct work_struct *ws)
 	 *   SCP_PLATFORM_READY = 1,
 	 */
 	scp_ready[SCP_A_ID] = 0;
+	scp_dvfs_cali_ready = 0;
 
 	/* wake lock AP*/
 	__pm_stay_awake(&scp_reset_lock);
@@ -1854,6 +1931,7 @@ static int __init scp_init(void)
 		scp_enable[i] = 0;
 		scp_ready[i] = 0;
 	}
+	scp_dvfs_cali_ready = 0;
 
 #if SCP_DVFS_INIT_ENABLE
 	scp_dvfs_init();

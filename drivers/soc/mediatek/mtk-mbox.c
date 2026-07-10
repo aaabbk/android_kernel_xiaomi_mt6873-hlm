@@ -17,7 +17,10 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/sched/clock.h>
+#include <linux/ratelimit.h>
 #include <mt-plat/mtk-mbox.h>
+
+static DEFINE_RATELIMIT_STATE(mbox_pin_err_rs, 1 * HZ, 3);
 
 /*
  * memory copy to tiny
@@ -605,12 +608,24 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 	spin_unlock_irqrestore(&minfo->mbox_lock, flags);
 
 	if (irq_temp == 0 && irq_status != 0) {
-		pr_err("[MBOX ISR]dev=%s pin table err, status=%x",
-			mbdev->name, irq_status);
-		for (i = 0; i < mbdev->recv_count; i++) {
-			pin_recv = &(mbdev->pin_recv_table[i]);
-			mtk_mbox_dump_recv_pin(mbdev, pin_recv);
+		if (__ratelimit(&mbox_pin_err_rs)) {
+			pr_err("[MBOX ISR]dev=%s pin table err, status=%x",
+				mbdev->name, irq_status);
+			for (i = 0; i < mbdev->recv_count; i++) {
+				pin_recv = &(mbdev->pin_recv_table[i]);
+				mtk_mbox_dump_recv_pin(mbdev, pin_recv);
+			}
 		}
+		/* Clear unhandled irq bits to prevent interrupt storm.
+		 * When no registered pin matches the irq_status bits,
+		 * irq_temp is 0 and the above clr_irq wrote 0 (cleared
+		 * nothing). The pending bits keep re-triggering the ISR
+		 * in an infinite loop, flooding the console and hanging
+		 * the system. Clear the actual irq_status bits here.
+		 */
+		spin_lock_irqsave(&minfo->mbox_lock, flags);
+		mtk_mbox_clr_irq(mbdev, mbox, irq_status);
+		spin_unlock_irqrestore(&minfo->mbox_lock, flags);
 	}
 
 	/*notify all receive pin handler*/

@@ -90,7 +90,7 @@ int scp_awake_lock(void *_scp_id)
 
 	count = 0;
 	while (++count != SCP_AWAKE_TIMEOUT) {
-		#if SCP_RECOVERY_SUPPORT
+#if SCP_RECOVERY_SUPPORT
 		if (atomic_read(&scp_reset_status) == RESET_STATUS_START) {
 			pr_notice("%s: resetting scp, break\n", __func__);
 			break;
@@ -119,8 +119,7 @@ int scp_awake_lock(void *_scp_id)
 		pr_notice("%s: awake %s fail..\n", __func__, core_id);
 		WARN_ON(1);
 #if SCP_RECOVERY_SUPPORT
-		/* avoid scp just wake up and halt to reset again */
-		if (scp_set_reset_status() == RESET_STATUS_STOP && is_scp_ready(scp_id) == 0) {
+		if (scp_set_reset_status() == RESET_STATUS_STOP) {
 			pr_notice("%s: start to reset scp...\n", __func__);
 
 			/* trigger halt isr, force scp enter wfi */
@@ -181,7 +180,7 @@ int scp_awake_unlock(void *_scp_id)
 
 	count = 0;
 	while (++count != SCP_AWAKE_TIMEOUT) {
-		#if SCP_RECOVERY_SUPPORT
+#if SCP_RECOVERY_SUPPORT
 		if (atomic_read(&scp_reset_status) == RESET_STATUS_START) {
 			pr_notice("%s: scp is being reset, break\n", __func__);
 			break;
@@ -253,9 +252,10 @@ int scp_sys_full_reset(void)
 	/* reset dram from dram back */
 	if ((int)(scp_region_info_copy.ap_dram_size) > 0) {
 		tmp = (void *)(scp_ap_dram_virt +
-			ROUNDUP(scp_region_info_copy.ap_dram_size, 1024)*2);
+			ROUNDUP(scp_region_info_copy.ap_dram_size, 1024));
+		/* mt6853 don't have core1 only dram region, remove *2 */
 		memset(scp_ap_dram_virt, 0,
-			ROUNDUP(scp_region_info_copy.ap_dram_size, 1024)*2);
+			ROUNDUP(scp_region_info_copy.ap_dram_size, 1024));
 		memcpy(scp_ap_dram_virt, tmp,
 			scp_region_info_copy.ap_dram_size);
 	}
