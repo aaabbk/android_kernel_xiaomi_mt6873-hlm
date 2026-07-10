@@ -48,6 +48,10 @@
 
 #define R_CORE0_SW_RSTN_SET	(scpreg.cfg_core0 + 0x0004)
 
+#define R_CORE1_SW_RSTN_CLR	(scpreg.cfg_core1 + 0x0000)
+
+#define R_CORE1_SW_RSTN_SET	(scpreg.cfg_core1 + 0x0004)
+
 
 #define R_CORE0_DBG_CTRL	(scpreg.cfg_core0 + 0x0010)
 	#define M_CORE_TBUF_DBG_SEL	(0xfff0ff0f)
@@ -59,9 +63,14 @@
 #define R_CORE0_WDT_CFG		(scpreg.cfg_core0 + 0x0034)
 	#define V_INSTANT_WDT	0x80000000
 
+#define R_CORE1_WDT_IRQ		(scpreg.cfg_core1 + 0x0030)
+
+#define R_CORE1_WDT_CFG		(scpreg.cfg_core1 + 0x0034)
+
 #define R_CORE0_STATUS			(scpreg.cfg_core0 + 0x0070)
 	#define B_CORE_GATED		(1 << 0)
 	#define B_CORE_HALT		(1 << 1)
+#define R_CORE1_STATUS			(scpreg.cfg_core1 + 0x0070)
 #define R_CORE0_MON_PC			(scpreg.cfg_core0 + 0x0080)
 #define R_CORE0_MON_LR			(scpreg.cfg_core0 + 0x0084)
 #define R_CORE0_MON_SP			(scpreg.cfg_core0 + 0x0088)
