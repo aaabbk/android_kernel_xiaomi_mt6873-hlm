@@ -856,8 +856,8 @@ static inline ssize_t scp_ipi_test_show(struct device *kobj
 	int ret;
 
 	if (scp_ready[SCP_A_ID]) {
-		ret = mtk_ipi_send(&scp_ipidev, IPI_OUT_TEST_0, 0, &value,
-				   PIN_OUT_SIZE_TEST_0, 0);
+		ret = mtk_ipi_send(&scp_ipidev, IPI_OUT_TEST_1, 0, &value,
+				   PIN_OUT_SIZE_TEST_1, 0);
 		return scnprintf(buf, PAGE_SIZE
 			, "SCP A ipi send ret=%d\n", ret);
 	} else

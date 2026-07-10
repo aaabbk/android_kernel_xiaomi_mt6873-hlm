@@ -67,6 +67,21 @@
 #endif
 #define pr_fmt(fmt)	"[scp_dvfs]: " fmt
 
+/*
+ * New SCP firmware compatibility:
+ * The new SCP firmware only runs on core1 and communicates via mbox3.
+ * mbox1 (core0) receives no responses from the new firmware.
+ * Redirect all core0 mbox1 IPI pins to core1 mbox3 equivalents.
+ * This affects: ULPOSC calibration, sleep debug, DVFS frequency setting.
+ * Pin sizes are identical between _0 and _1 variants.
+ */
+#define IPI_OUT_C_SLEEP_0            IPI_OUT_C_SLEEP_1
+#undef PIN_OUT_C_SIZE_SLEEP_0
+#define PIN_OUT_C_SIZE_SLEEP_0       PIN_OUT_C_SIZE_SLEEP_1
+#define IPI_OUT_DVFS_SET_FREQ_0      IPI_OUT_DVFS_SET_FREQ_1
+#undef PIN_OUT_SIZE_DVFS_SET_FREQ_0
+#define PIN_OUT_SIZE_DVFS_SET_FREQ_0 PIN_OUT_SIZE_DVFS_SET_FREQ_1
+
 #define DRV_Reg32(addr)	readl(addr)
 #define DRV_WriteReg32(addr, val) writel(val, addr)
 #define DRV_SetReg32(addr, val)	DRV_WriteReg32(addr, DRV_Reg32(addr) | (val))
