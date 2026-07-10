@@ -14,8 +14,8 @@ subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
 subdir-ccflags-y += -I$(srctree)/drivers/spi/mediatek/$(MTK_PLATFORM)
 
 
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/teei/300/tz_driver/include
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/teei/300/common/include/
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/teei/400/tz_driver/include
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/teei/400/common/include/
 
 #obj-$(CONFIG_GOODIX_FINGERPRINT)	+= gf_tee.o
 #gf_tee-y := gf_spi_tee.o gf_spi_factory.o
