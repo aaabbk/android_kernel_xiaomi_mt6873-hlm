@@ -231,6 +231,8 @@ extern void memcpy_from_scp(void *trg, const void __iomem *src,
 		int size);
 extern int reset_scp(int reset);
 
+void scp_wdt_reset(int cpu_id);
+
 extern phys_addr_t scp_get_reserve_mem_phys(enum scp_reserve_mem_id_t id);
 extern phys_addr_t scp_get_reserve_mem_virt(enum scp_reserve_mem_id_t id);
 extern phys_addr_t scp_get_reserve_mem_size(enum scp_reserve_mem_id_t id);
@@ -258,7 +260,6 @@ extern void scp_enable_sram(void);
 extern int scp_sys_full_reset(void);
 extern void scp_reset_awake_counts(void);
 extern void scp_awake_init(void);
-void scp_wdt_reset(int cpu_id);
 
 #if SCP_RECOVERY_SUPPORT
 extern unsigned int scp_reset_by_cmd;

@@ -1889,7 +1889,7 @@ static struct platform_driver mtk_scp_device = {
 };
 
 static const struct of_device_id scpsys_of_ids[] = {
-	{ .compatible = "mediatek,scpsys", },
+	{ .compatible = "mediatek,scp_infra", },
 	{}
 };
 
@@ -1897,7 +1897,7 @@ static struct platform_driver mtk_scpsys_device = {
 	.probe = scpsys_device_probe,
 	.remove = scpsys_device_remove,
 	.driver = {
-		.name = "scpsys",
+		.name = "scp_infra",
 		.owner = THIS_MODULE,
 #ifdef CONFIG_OF
 		.of_match_table = scpsys_of_ids,
