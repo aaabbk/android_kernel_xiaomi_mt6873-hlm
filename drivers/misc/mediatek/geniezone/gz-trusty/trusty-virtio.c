@@ -73,6 +73,7 @@ struct trusty_ctx {
 	struct mutex mlock;	/* protects vdev_list */
 	enum tee_id_t tee_id;	/* For multiple TEEs */
 	struct trusty_task_info task_info[TRUSTY_TASK_MAX_ID];
+	atomic_t virtio_started;	/* 0 until trusty_virtio_start() returns */
 };
 
 struct trusty_vring {
@@ -108,12 +109,21 @@ static void check_all_vqs(struct trusty_ctx *tctx)
 	uint i;
 	struct trusty_vdev *tvdev;
 
+	mutex_lock(&tctx->mlock);
 	list_for_each_entry(tvdev, &tctx->vdev_list, node) {
 		for (i = 0; i < tvdev->vring_num; i++) {
+			/* Skip vqs that have not been created yet by the
+			 * virtio bus probe (_find_vq).  This can happen
+			 * when the TEE starts and notifies us before the
+			 * virtio device probe has completed.
+			 */
+			if (!tvdev->vrings[i].vq)
+				continue;
 			/* vq->vq.callback(&vq->vq);  trusty_virtio_notify */
 			vring_interrupt(0, tvdev->vrings[i].vq);
 		}
 	}
+	mutex_unlock(&tctx->mlock);
 }
 
 static void trusty_task_adjust_pri_cpu(struct trusty_ctx *tctx,
@@ -786,6 +796,17 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 		goto err_start_virtio;
 	}
 
+	/* Mark virtio as started so that trusty_task_chk is allowed to
+	 * call check_all_vqs().  Before this point, the SMC return from
+	 * trusty_virtio_start() would wake the kthread, but vqs may not
+	 * have been created by the virtio bus probe yet.
+	 *
+	 * Also issue complete() to wake the kthread so any messages the
+	 * TEE sent during start are processed.
+	 */
+	atomic_set(&tctx->virtio_started, 1);
+	complete(&tctx->task_info[TRUSTY_TASK_CHK_ID].run);
+
 	/* attach shared area */
 	tctx->shared_va = descr_va;
 	tctx->shared_sz = descr_buf_sz;
@@ -856,9 +877,17 @@ static int trusty_task_chk(void *data)
 	while (!kthread_should_stop()) {
 		wait_for_completion_interruptible_timeout(
 					&tctx->task_info[TRUSTY_TASK_CHK_ID].run, timeout);
-		if (atomic_read(&tctx->task_info[TRUSTY_TASK_CHK_ID].task_num))
-			check_all_vqs(tctx);
-		else
+		if (atomic_read(&tctx->task_info[TRUSTY_TASK_CHK_ID].task_num)) {
+			/* Do not call check_all_vqs() until virtio has
+			 * been started.  Before trusty_virtio_start()
+			 * returns, the SMC call return may wake us via
+			 * trusty_call_notify(), but the virtio device
+			 * probe (which creates the vqs) may not have
+			 * completed yet, leading to NULL vq pointers.
+			 */
+			if (atomic_read(&tctx->virtio_started))
+				check_all_vqs(tctx);
+		} else
 			timeout = msecs_to_jiffies(1000);
 	}
 	pr_info("tee%d/%s_%d -<\n", tctx->tee_id, __func__, task_idx);
@@ -1037,6 +1066,7 @@ static int trusty_virtio_probe(struct platform_device *pdev)
 	tctx->callback_notifier.notifier_call = trusty_callback_notifier;
 	mutex_init(&tctx->mlock);
 	INIT_LIST_HEAD(&tctx->vdev_list);
+	atomic_set(&tctx->virtio_started, 0);
 	platform_set_drvdata(pdev, tctx);
 
 	tctx->task_info[TRUSTY_TASK_KICK_ID].task_max = TRUSTY_TASK_KICK_NUM;
