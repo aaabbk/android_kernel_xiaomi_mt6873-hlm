@@ -13,6 +13,7 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
+#include <linux/ratelimit.h>
 #include <mt-plat/aee.h>
 #include <linux/interrupt.h>
 #include <mt-plat/sync_write.h>
@@ -70,14 +71,26 @@ static void wait_scp_wdt_irq_done(void)
 irqreturn_t scp_A_irq_handler(int irq, void *dev_id)
 {
 	unsigned int reg0 = readl(R_CORE0_WDT_IRQ);
-
-	pr_err("[SCP] %s %x\n", __func__, reg0);
+	unsigned int gipc;
 
 	if (reg0) {
 		scp_A_wdt_handler();
 		/* clear IRQ */
 		wait_scp_wdt_irq_done();
 		writel(B_WDT_IRQ, R_CORE0_WDT_IRQ);
+	} else {
+		/* Non-WDT IPC0/IPC1 interrupt: clear GIPC0/GIPC1 pending
+		 * bits to prevent level-high IRQ storm. The new RV33 SCP
+		 * firmware may assert GIPC0 for notifications that the
+		 * v03 handler does not process. Without clearing, the
+		 * level-high GIC interrupt re-fires indefinitely.
+		 */
+		gipc = readl(R_GIPC_IN_SET);
+		if (gipc & 0xFF) {
+			writel(gipc & 0xFF, R_GIPC_IN_CLR);
+			pr_err_ratelimited("[SCP] %s: cleared GIPC %x\n",
+					   __func__, gipc & 0xFF);
+		}
 	}
 	return IRQ_HANDLED;
 }
