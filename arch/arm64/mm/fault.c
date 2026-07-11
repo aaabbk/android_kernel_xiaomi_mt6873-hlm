@@ -28,6 +28,7 @@
 #include <linux/page-flags.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/debug.h>
+#include <linux/atomic.h>
 #include <linux/highmem.h>
 #include <linux/perf_event.h>
 #include <linux/preempt.h>
@@ -421,6 +422,15 @@ static int __do_page_fault(struct mm_struct *mm, unsigned long addr,
 	 * it.
 	 */
 good_area:
+	if (vma->vm_file) {
+		static atomic_t diag_gac = ATOMIC_INIT(0);
+		int gc = atomic_inc_return(&diag_gac);
+		if (gc <= 10)
+			pr_alert("DIAG fault: good_area addr=%lx vm_flags=%lx file=%s pid=%d:%s\n",
+				addr, vma->vm_flags,
+				vma->vm_file->f_path.dentry->d_name.name,
+				current->pid, current->comm);
+	}
 	/*
 	 * Check that the permissions on the VMA allow for the fault which
 	 * occurred.
@@ -438,6 +448,13 @@ check_stack:
 out:
 	return fault;
 }
+
+static int __init diag_v3_marker(void)
+{
+	pr_alert("DIAG: kernel patch v3 (targeted boot.oat diag)\n");
+	return 0;
+}
+early_initcall(diag_v3_marker);
 
 static bool is_el0_instruction_abort(unsigned int esr)
 {

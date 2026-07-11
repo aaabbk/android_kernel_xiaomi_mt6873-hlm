@@ -1157,6 +1157,15 @@ again:
 				break;
 		}
 		if (pte_none(*src_pte)) {
+			if (vma->vm_file && progress == 0) {
+				static atomic_t diag_nfc = ATOMIC_INIT(0);
+				int nc = atomic_inc_return(&diag_nfc);
+				if (nc <= 5)
+					pr_alert("DIAG fork: pte_none src addr=%lx file=%s flags=%lx\n",
+						addr,
+						vma->vm_file->f_path.dentry->d_name.name,
+						vma->vm_flags);
+			}
 			progress++;
 			continue;
 		}
@@ -4346,8 +4355,18 @@ static int handle_pte_fault(struct vm_fault *vmf)
 		else if (vmf->flags & FAULT_FLAG_SPECULATIVE)
 			return VM_FAULT_RETRY;
 #endif
-		else
+		else {
+			if (vmf->vma->vm_file) {
+				static atomic_t diag_fcnt = ATOMIC_INIT(0);
+				int fc = atomic_inc_return(&diag_fcnt);
+				if (fc <= 10)
+					pr_alert("DIAG fault: pte=NULL addr=%lx flags=%lx file=%s pid=%d:%s\n",
+						vmf->address, vmf->vma->vm_flags,
+						vmf->vma->vm_file->f_path.dentry->d_name.name,
+						current->pid, current->comm);
+			}
 			return do_fault(vmf);
+		}
 	}
 
 	if (!pte_present(vmf->orig_pte))
