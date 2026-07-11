@@ -11,6 +11,7 @@
  * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
+#include <linux/completion.h>
 #include "scp_ipi.h"
 #include "scp_ipi_table.h"
 
@@ -41,6 +42,83 @@ struct scp_ipi_legacy_pkt {
 	unsigned int len;
 	void *data;
 };
+
+/* ===== MPOOL-based IPI with completion support =====
+ * New SCP firmware only supports MPOOL channel for bidirectional IPI.
+ * Direct pin-based completion (recv_opt=1) does not work.
+ * We use a completion variable signaled in scp_legacy_handler.
+ */
+static DECLARE_COMPLETION(scp_mpool_comp);
+unsigned int scp_mpool_ackdata;
+static int scp_mpool_ack_pending;
+
+static void scp_mpool_ack_handler(int id, void *data, unsigned int len)
+{
+	if (scp_mpool_ack_pending) {
+		if (len >= sizeof(unsigned int))
+			scp_mpool_ackdata = *(unsigned int *)data;
+		scp_mpool_ack_pending = 0;
+		complete(&scp_mpool_comp);
+	}
+}
+
+unsigned int scp_get_mpool_ackdata(void)
+{
+	return scp_mpool_ackdata;
+}
+EXPORT_SYMBOL_GPL(scp_get_mpool_ackdata);
+
+int scp_ipi_send_mpool(void *buf, unsigned int len, unsigned int timeout_ms)
+{
+	char pkt[256];
+	void *ptr;
+	int ret;
+	unsigned int ipi_id = IPI_CHRE;
+
+	if (len > (PIN_OUT_SIZE_SCP_MPOOL - 2) * MBOX_SLOT_SIZE) {
+		pr_err("%s: len overflow\n", __func__);
+		return -1;
+	}
+
+	if (is_scp_ready(SCP_A_ID) == 0) {
+		pr_err("[SCP] %s: SCP not ready\n", __func__);
+		return -2;
+	}
+
+	memcpy((void *)pkt, (void *)&ipi_id, sizeof(uint32_t));
+	memcpy((void *)(pkt + 4), (void *)&len, sizeof(uint32_t));
+	memcpy((void *)(pkt + 8), buf, len);
+	ptr = pkt;
+
+	scp_mpool_ack_pending = 1;
+	reinit_completion(&scp_mpool_comp);
+
+	/* Try MPOOL_0 (mbox2, core0) first */
+	ret = mtk_ipi_send(&scp_ipidev, IPI_OUT_SCP_MPOOL_0,
+			0, ptr, PIN_OUT_SIZE_SCP_MPOOL, 0);
+
+	if (ret != IPI_ACTION_DONE) {
+		/* Fall back to MPOOL_1 (mbox4, core1) */
+		ret = mtk_ipi_send(&scp_ipidev, IPI_OUT_SCP_MPOOL_1,
+				0, ptr, PIN_OUT_SIZE_SCP_MPOOL, 0);
+	}
+
+	if (ret != IPI_ACTION_DONE) {
+		scp_mpool_ack_pending = 0;
+		pr_err("%s: mtk_ipi_send fail %d\n", __func__, ret);
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&scp_mpool_comp,
+			msecs_to_jiffies(timeout_ms))) {
+		scp_mpool_ack_pending = 0;
+		pr_err("%s: ACK timeout\n", __func__);
+		return -1;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(scp_ipi_send_mpool);
 
 /*
  * This is a handler for handling legacy ipi callback function
@@ -228,6 +306,9 @@ enum scp_ipi_status scp_legacy_ipi_init(void)
 {
 	int ret = 0;
 
+	/* Register ACK handler for MPOOL-based completion */
+	scp_ipi_registration(IPI_CHRE, scp_mpool_ack_handler, "mpool_ack");
+
 	ret = mtk_ipi_register(&scp_ipidev, IPI_IN_SCP_MPOOL_0,
 			      (void *)scp_legacy_handler, 0,
 			      msg_legacy_ipi_mpool_0);
@@ -333,4 +414,3 @@ void mt_print_scp_ipi_id(unsigned int mbox)
 		}
 	}
 }
-

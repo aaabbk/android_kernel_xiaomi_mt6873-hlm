@@ -69,18 +69,24 @@
 
 /*
  * New SCP firmware compatibility:
- * The new SCP firmware only runs on core1 and communicates via mbox3.
- * mbox1 (core0) receives no responses from the new firmware.
- * Redirect all core0 mbox1 IPI pins to core1 mbox3 equivalents.
- * This affects: ULPOSC calibration, sleep debug, DVFS frequency setting.
- * Pin sizes are identical between _0 and _1 variants.
+ * The new SCP firmware does not respond to pin-based completion (ACK) on
+ * mbox1/mbox3. Route sleep IPI (ULPOSC calibration, sleep debug) through
+ * the MPOOL channel using scp_ipi_send_mpool() which implements custom
+ * completion via scp_legacy_handler.
+ * DVFS fire-and-forget still uses direct pin (redirected to mbox3).
  */
-#define IPI_OUT_C_SLEEP_0            IPI_OUT_C_SLEEP_1
-#undef PIN_OUT_C_SIZE_SLEEP_0
-#define PIN_OUT_C_SIZE_SLEEP_0       PIN_OUT_C_SIZE_SLEEP_1
 #define IPI_OUT_DVFS_SET_FREQ_0      IPI_OUT_DVFS_SET_FREQ_1
 #undef PIN_OUT_SIZE_DVFS_SET_FREQ_0
 #define PIN_OUT_SIZE_DVFS_SET_FREQ_0 PIN_OUT_SIZE_DVFS_SET_FREQ_1
+
+/* Redirect mtk_ipi_send_compl to MPOOL-based send with completion */
+#define mtk_ipi_send_compl(dev, pin, opt, data, slots, timeout) \
+	({ int _r = scp_ipi_send_mpool(data, (slots) * MBOX_SLOT_SIZE, timeout); \
+	   slp_ipi_ackdata0 = scp_mpool_ackdata; \
+	   _r; })
+
+extern int scp_ipi_send_mpool(void *buf, unsigned int len, unsigned int timeout_ms);
+extern unsigned int scp_mpool_ackdata;
 
 #define DRV_Reg32(addr)	readl(addr)
 #define DRV_WriteReg32(addr, val) writel(val, addr)
@@ -234,13 +240,9 @@ struct ulposc_cali_t ulposc_cfg[MAX_ULPOSC_CALI_NUM] = {
 
 void scp_slp_ipi_init(void)
 {
-	int ret;
-
-	ret = mtk_ipi_register(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-			NULL, NULL, &slp_ipi_ackdata0);
-	if (ret)
-		pr_err("scp0 sleep ipi_register fail, ret %d\n", ret);
-
+	/* MPOOL-based send does not use pin registration.
+	 * ACK is handled by scp_mpool_ack_handler in scp_wrapper_ipi.c
+	 */
 	slp_ipi_init_done = 1;
 }
 
