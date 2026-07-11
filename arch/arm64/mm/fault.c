@@ -491,12 +491,10 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
 
 	/*
-	 * let's try a speculative page fault without grabbing the
-	 * mmap_sem.
+	 * Speculative page fault disabled - causes race condition with
+	 * COW that results in zero-filled pages after zygote fork.
+	 * The official 4.14.186 kernel does not have SPF enabled.
 	 */
-	fault = handle_speculative_fault(mm, addr, mm_flags, vm_flags);
-	if (fault != VM_FAULT_RETRY)
-		goto done;
 
 	/*
 	 * As per x86, we may deadlock here. However, since the kernel only
