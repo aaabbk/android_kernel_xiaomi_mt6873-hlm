@@ -824,8 +824,10 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
-    /* [SF_DEBUG] SurfaceFlinger death capture v2 */
-    if (!strncmp(current->comm, "surfaceflinger", 14)) {
+    /* [SF_DEBUG] SurfaceFlinger/keymaster death capture v2 */
+    if (!strncmp(current->comm, "surfaceflinger", 14) ||
+        strstr(current->comm, "keymaster") ||
+        strstr(current->comm, "android.hardwar")) {
         if (code < 0x100) {
             /* killed by signal: code == signal number */
             int sig = (int)code;
@@ -842,8 +844,8 @@ void __noreturn do_exit(long code)
             case 5:  sn = "SIGTRAP(trap)"; break;
             }
 
-            pr_err("[SF_DEBUG] ====== SurfaceFlinger CRASHED ======\n");
-            pr_err("[SF_DEBUG] killed by signal %d: %s, pid=%d\n",
+            pr_emerg("[SF_DEBUG] ====== %s CRASHED ======\n", current->comm);
+            pr_emerg("[SF_DEBUG] killed by signal %d: %s, pid=%d\n",
                    sig, sn, current->pid);
 
             regs = task_pt_regs(current);
@@ -852,7 +854,7 @@ void __noreturn do_exit(long code)
                 unsigned long offset_pc = 0, offset_lr = 0;
                 char *file_pc = "??", *file_lr = "??";
 
-                pr_err("[SF_DEBUG] user PC=0x%llx LR=0x%llx SP=0x%llx\n",
+                pr_emerg("[SF_DEBUG] user PC=0x%llx LR=0x%llx SP=0x%llx\n",
                        regs->pc, regs->regs[30], regs->sp);
 
                 if (current->mm) {
@@ -872,15 +874,15 @@ void __noreturn do_exit(long code)
                     up_read(&current->mm->mmap_sem);
                 }
 
-                pr_err("[SF_DEBUG] PC in %s+0x%lx\n", file_pc, offset_pc);
-                pr_err("[SF_DEBUG] LR in %s+0x%lx\n", file_lr, offset_lr);
+                pr_emerg("[SF_DEBUG] PC in %s+0x%lx\n", file_pc, offset_pc);
+                pr_emerg("[SF_DEBUG] LR in %s+0x%lx\n", file_lr, offset_lr);
 
                 /* Walk user stack frames via FP (x29) */
                 {
                     unsigned long fp = regs->regs[29];
                     int i;
 
-                    pr_err("[SF_DEBUG] user backtrace:\n");
+                    pr_emerg("[SF_DEBUG] user backtrace:\n");
                     for (i = 0; i < 16 && fp; i++) {
                         unsigned long next_fp = 0, pc = 0;
                         struct vm_area_struct *vma;
@@ -907,7 +909,7 @@ void __noreturn do_exit(long code)
                             up_read(&current->mm->mmap_sem);
                         }
 
-                        pr_err("[SF_DEBUG]   [%d] %s+0x%lx (pc=0x%lx)\n",
+                        pr_emerg("[SF_DEBUG]   [%d] %s+0x%lx (pc=0x%lx)\n",
                                i, file_pc, offset_pc, pc);
                         fp = next_fp;
                     }
@@ -915,14 +917,14 @@ void __noreturn do_exit(long code)
             }
 
             if (current->parent)
-                pr_err("[SF_DEBUG] parent: pid=%d comm=%s\n",
+                pr_emerg("[SF_DEBUG] parent: pid=%d comm=%s\n",
                        current->parent->pid, current->parent->comm);
 
-            pr_err("[SF_DEBUG] ====== end crash dump ======\n");
+            pr_emerg("[SF_DEBUG] ====== end crash dump ======\n");
         } else {
             /* normal exit: exit_status = code >> 8 */
-            pr_err("[SF_DEBUG] SurfaceFlinger exited normally, code=%d, pid=%d\n",
-                   (int)(code >> 8), current->pid);
+            pr_err("[SF_DEBUG] %s exited normally, code=%d, pid=%d\n",
+                   current->comm, (int)(code >> 8), current->pid);
         }
     }
 

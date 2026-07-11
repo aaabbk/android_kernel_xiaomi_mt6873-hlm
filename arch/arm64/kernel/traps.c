@@ -378,6 +378,30 @@ static void force_signal_inject(int signal, int code, struct pt_regs *regs,
 		dump_instr(KERN_INFO, regs);
 	}
 
+	/* Always log user-space SIGSEGV/SIGILL for crash diagnosis */
+	if (signal == SIGSEGV || signal == SIGILL) {
+		pr_emerg("USERCRASH: %s[%d]: %s (sig=%d, code=%d) pc=0x%llx sp=0x%llx lr=0x%llx\n",
+			current->comm, task_pid_nr(current), desc, signal, code,
+			regs->pc, regs->sp, regs->regs[30]);
+		pr_emerg("USERCRASH: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+			regs->regs[0], regs->regs[1], regs->regs[2], regs->regs[3]);
+		pr_emerg("USERCRASH: x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx\n",
+			regs->regs[4], regs->regs[5], regs->regs[6], regs->regs[7]);
+		pr_emerg("USERCRASH: x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx\n",
+			regs->regs[8], regs->regs[9], regs->regs[10], regs->regs[11]);
+		pr_emerg("USERCRASH: x12=0x%llx x13=0x%llx x14=0x%llx x15=0x%llx\n",
+			regs->regs[12], regs->regs[13], regs->regs[14], regs->regs[15]);
+		pr_emerg("USERCRASH: x16=0x%llx x17=0x%llx x18=0x%llx x19=0x%llx\n",
+			regs->regs[16], regs->regs[17], regs->regs[18], regs->regs[19]);
+		pr_emerg("USERCRASH: x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx\n",
+			regs->regs[20], regs->regs[21], regs->regs[22], regs->regs[23]);
+		pr_emerg("USERCRASH: x24=0x%llx x25=0x%llx x26=0x%llx x27=0x%llx\n",
+			regs->regs[24], regs->regs[25], regs->regs[26], regs->regs[27]);
+		pr_emerg("USERCRASH: x28=0x%llx x29=0x%llx\n",
+			regs->regs[28], regs->regs[29]);
+		dump_instr(KERN_EMERG, regs);
+	}
+
 	info.si_signo = signal;
 	info.si_errno = 0;
 	info.si_code  = code;
