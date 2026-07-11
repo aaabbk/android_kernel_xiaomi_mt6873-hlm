@@ -4226,4 +4226,3 @@ void check_move_unevictable_pages(struct page **pages, int nr_pages)
 	}
 }
 #endif /* CONFIG_SHMEM */
-EXPORT_SYMBOL_GPL(check_move_unevictable_pages);
