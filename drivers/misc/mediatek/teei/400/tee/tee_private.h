@@ -127,6 +127,9 @@ int tee_shm_init(void);
 
 int isee_shm_get_fd(struct tee_shm *shm);
 
+struct tee_shm *isee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
+void isee_shm_free(struct tee_shm *shm);
+
 bool isee_device_get(struct tee_device *teedev);
 void isee_device_put(struct tee_device *teedev);
 

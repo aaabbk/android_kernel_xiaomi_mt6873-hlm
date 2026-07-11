@@ -690,6 +690,38 @@ static int tee_ioctl_shm_release(struct tee_context *ctx, unsigned long arg)
 	return 0;
 }
 
+static int tee_ioctl_shm_alloc(struct tee_context *ctx,
+			      struct tee_ioctl_shm_alloc_data __user *udata)
+{
+	struct tee_ioctl_shm_alloc_data data;
+	struct tee_shm *shm;
+	int fd;
+
+	if (copy_from_user(&data, udata, sizeof(data)))
+		return -EFAULT;
+
+	if (data.flags)
+		return -EINVAL;
+
+	shm = isee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	if (IS_ERR(shm))
+		return PTR_ERR(shm);
+
+	fd = isee_shm_get_fd(shm);
+	if (fd < 0) {
+		isee_shm_free(shm);
+		return fd;
+	}
+
+	data.id = shm->id;
+	if (copy_to_user(udata, &data, sizeof(data))) {
+		isee_shm_free(shm);
+		return -EFAULT;
+	}
+
+	return fd;
+}
+
 static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct tee_context *ctx = filp->private_data;
@@ -704,6 +736,9 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case TEE_IOC_VERSION:
 		retVal = tee_ioctl_version(ctx, uarg);
+		break;
+	case TEE_IOC_SHM_ALLOC:
+		retVal = tee_ioctl_shm_alloc(ctx, uarg);
 		break;
 	case TEE_IOC_SHM_RELEASE:
 		retVal = tee_ioctl_shm_release(ctx, arg);
