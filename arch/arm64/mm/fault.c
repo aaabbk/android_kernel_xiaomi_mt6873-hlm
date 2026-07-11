@@ -32,6 +32,7 @@
 #include <linux/perf_event.h>
 #include <linux/preempt.h>
 #include <linux/hugetlb.h>
+#include <linux/atomic.h>
 
 #include <asm/bug.h>
 #include <asm/cmpxchg.h>
@@ -471,7 +472,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 
 	if (is_el0_instruction_abort(esr)) {
 		vm_flags = VM_EXEC;
-	} else if ((esr & ESR_ELx_WNR) && !(esr & ESR_ELx_CM)) {
+	} else if (esr & ESR_ELx_WNR) {
 		vm_flags = VM_WRITE;
 		mm_flags |= FAULT_FLAG_WRITE;
 	}
@@ -489,6 +490,18 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
+
+	/* DIAG: log first 20 page faults only to avoid log flooding */
+	{
+		static atomic_t diag_count = ATOMIC_INIT(0);
+		int c = atomic_inc_return(&diag_count);
+		if (c <= 20)
+			pr_warn("DIAG fault[%d]: addr=%lx esr=%lx WnR=%d CM=%d vm_flags=%lx pid=%d:%s\n",
+				c, addr, esr,
+				(esr & ESR_ELx_WNR) ? 1 : 0,
+				(esr & ESR_ELx_CM) ? 1 : 0,
+				vm_flags, current->pid, current->comm);
+	}
 
 	/*
 	 * let's try a speculative page fault without grabbing the
