@@ -32,7 +32,6 @@
 #include <linux/perf_event.h>
 #include <linux/preempt.h>
 #include <linux/hugetlb.h>
-#include <linux/atomic.h>
 
 #include <asm/bug.h>
 #include <asm/cmpxchg.h>
@@ -440,13 +439,6 @@ out:
 	return fault;
 }
 
-static int __init diag_patch_marker(void)
-{
-	pr_alert("DIAG: kernel patch v2 loaded (pr_alert level)\n");
-	return 0;
-}
-early_initcall(diag_patch_marker);
-
 static bool is_el0_instruction_abort(unsigned int esr)
 {
 	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_LOW;
@@ -497,18 +489,6 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
-
-	/* DIAG: log first 20 page faults only to avoid log flooding */
-	{
-		static atomic_t diag_count = ATOMIC_INIT(0);
-		int c = atomic_inc_return(&diag_count);
-		if (c <= 20)
-			pr_alert("DIAG fault[%d]: addr=%lx esr=%lx WnR=%d CM=%d vm_flags=%lx pid=%d:%s\n",
-				c, addr, esr,
-				(esr & ESR_ELx_WNR) ? 1 : 0,
-				(esr & ESR_ELx_CM) ? 1 : 0,
-				vm_flags, current->pid, current->comm);
-	}
 
 	/*
 	 * let's try a speculative page fault without grabbing the
