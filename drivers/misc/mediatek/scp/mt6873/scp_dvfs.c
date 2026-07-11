@@ -69,24 +69,45 @@
 
 /*
  * New SCP firmware compatibility:
- * The new SCP firmware does not respond to pin-based completion (ACK) on
- * mbox1/mbox3. Route sleep IPI (ULPOSC calibration, sleep debug) through
- * the MPOOL channel using scp_ipi_send_mpool() which implements custom
- * completion via scp_legacy_handler.
- * DVFS fire-and-forget still uses direct pin (redirected to mbox3).
+ * Official kernel (decompiled) shows:
+ * - scp_ipi_send() has NO wait parameter — always fire-and-forget
+ * - All IPI routed through MPOOL with {id, len, data} header
+ * - No mtk_ipi_send_compl (pin-based completion) exists at all
+ * - Bidirectional comms via message queues, not pin ACK
+ *
+ * Fix: redirect all mtk_ipi_send_compl to scp_ipi_send (MPOOL wrapper)
+ * with IPI_CHRE as the id. The wrapper adds {id, len, data} header.
+ * Also redirect DVFS direct mtk_ipi_send from mbox1 to mbox3.
  */
+
+/* MPOOL IPI id enum — must match v02/scp_ipi_wrapper.h */
+enum ipi_id {
+	IPI_MPOOL = 0,
+	IPI_CHRE,
+	IPI_CHREX,
+	IPI_SENSOR,
+	SCP_NR_IPI,
+};
+
+#ifndef MBOX_SLOT_SIZE
+#define MBOX_SLOT_SIZE 4
+#endif
+
+/* Redirect DVFS pin to mbox3 (fire-and-forget, no ACK needed) */
 #define IPI_OUT_DVFS_SET_FREQ_0      IPI_OUT_DVFS_SET_FREQ_1
 #undef PIN_OUT_SIZE_DVFS_SET_FREQ_0
 #define PIN_OUT_SIZE_DVFS_SET_FREQ_0 PIN_OUT_SIZE_DVFS_SET_FREQ_1
 
-/* Redirect mtk_ipi_send_compl to MPOOL-based send with completion */
-#define mtk_ipi_send_compl(dev, pin, opt, data, slots, timeout) \
-	({ int _r = scp_ipi_send_mpool(data, (slots) * MBOX_SLOT_SIZE, timeout); \
-	   slp_ipi_ackdata0 = scp_mpool_ackdata; \
-	   _r; })
+/* Redirect completion-based send to MPOOL fire-and-forget.
+ * scp_ipi_send wraps data in {id=IPI_CHRE, len, data} and sends via
+ * MPOOL_0 (mbox2). This matches official kernel protocol.
+ * Return SCP_IPI_DONE(0) = IPI_ACTION_DONE(0) so existing checks pass.
+ */
+extern int scp_ipi_send(int id, void *buf, unsigned int len,
+			unsigned int wait, enum scp_core_id scp_id);
 
-extern int scp_ipi_send_mpool(void *buf, unsigned int len, unsigned int timeout_ms);
-extern unsigned int scp_mpool_ackdata;
+#define mtk_ipi_send_compl(dev, pin, opt, data, slots, timeout) \
+	scp_ipi_send(IPI_CHRE, data, (slots) * MBOX_SLOT_SIZE, 0, SCP_A_ID)
 
 #define DRV_Reg32(addr)	readl(addr)
 #define DRV_WriteReg32(addr, val) writel(val, addr)
@@ -240,8 +261,8 @@ struct ulposc_cali_t ulposc_cfg[MAX_ULPOSC_CALI_NUM] = {
 
 void scp_slp_ipi_init(void)
 {
-	/* MPOOL-based send does not use pin registration.
-	 * ACK is handled by scp_mpool_ack_handler in scp_wrapper_ipi.c
+	/* Pin registration not needed for fire-and-forget mode.
+	 * ACK data (slp_ipi_ackdata0) is unavailable with new firmware.
 	 */
 	slp_ipi_init_done = 1;
 }
@@ -1395,6 +1416,8 @@ void sync_ulposc_cali_data_to_scp(void)
 					ulposc_cfg[i].cali_val);
 			WARN_ON(1);
 		}
+		/* Allow SCP time to process calibration command */
+		usleep_range(2000, 3000);
 	}
 
 	/* check if SCP clock is switched to ULPOSC */
