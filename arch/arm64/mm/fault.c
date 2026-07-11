@@ -440,6 +440,13 @@ out:
 	return fault;
 }
 
+static int __init diag_patch_marker(void)
+{
+	pr_alert("DIAG: kernel patch v2 loaded (pr_alert level)\n");
+	return 0;
+}
+early_initcall(diag_patch_marker);
+
 static bool is_el0_instruction_abort(unsigned int esr)
 {
 	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_LOW;
@@ -496,7 +503,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 		static atomic_t diag_count = ATOMIC_INIT(0);
 		int c = atomic_inc_return(&diag_count);
 		if (c <= 20)
-			pr_warn("DIAG fault[%d]: addr=%lx esr=%lx WnR=%d CM=%d vm_flags=%lx pid=%d:%s\n",
+			pr_alert("DIAG fault[%d]: addr=%lx esr=%lx WnR=%d CM=%d vm_flags=%lx pid=%d:%s\n",
 				c, addr, esr,
 				(esr & ESR_ELx_WNR) ? 1 : 0,
 				(esr & ESR_ELx_CM) ? 1 : 0,

@@ -2551,7 +2551,7 @@ static inline bool cow_user_page(struct page *dst, struct page *src,
 	}
 
 	/* src == NULL: PFN mapping, best-effort copy */
-	pr_warn("DIAG cow_user_page: src=NULL addr=%lx vma_flags=%lx\n",
+	pr_alert("DIAG cow_user_page: src=NULL addr=%lx vma_flags=%lx\n",
 		addr, vma->vm_flags);
 
 	/*
@@ -2618,8 +2618,8 @@ static inline bool cow_user_page(struct page *dst, struct page *src,
 			 */
 warn:
 			WARN_ON_ONCE(1);
-			pr_warn("DIAG cow_user_page: ZERO-FILL addr=%lx\n",
-				(unsigned long)uaddr);
+			pr_alert("DIAG cow_user_page: ZERO-FILL addr=%lx\n",
+			(unsigned long)uaddr);
 			clear_page(kaddr);
 		}
 	}
@@ -3025,7 +3025,7 @@ static int do_wp_page(struct vm_fault *vmf)
 	vmf->page = __vm_normal_page(vma, vmf->address, vmf->orig_pte, false,
 				     vmf->vma_flags);
 	if (!vmf->page) {
-		pr_warn("DIAG do_wp_page: page=NULL addr=%lx flags=%lx\n",
+		pr_alert("DIAG do_wp_page: page=NULL addr=%lx flags=%lx\n",
 			vmf->address, vmf->vma_flags);
 		/*
 		 * VM_MIXEDMAP !pfn_valid() case, or VM_SOFTDIRTY clear on a
@@ -4547,7 +4547,7 @@ int __handle_speculative_fault(struct mm_struct *mm, unsigned long address,
 	flags |= FAULT_FLAG_SPECULATIVE;
 
 	if (sysctl_speculative_page_fault)
-		pr_warn("DIAG SPF: addr=%lx flags=%x vm_flags=%lx\n",
+		pr_alert("DIAG SPF: addr=%lx flags=%x vm_flags=%lx\n",
 			address, flags, access_vm);
 
 	vma = get_vma(mm, address);
