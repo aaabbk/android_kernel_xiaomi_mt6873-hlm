@@ -115,13 +115,14 @@ struct radix_tree_root {
 	struct radix_tree_node	__rcu *rnode;
 };
 
-#define RADIX_TREE_INIT(mask)	{					\
+#define RADIX_TREE_INIT(name, mask)	{				\
+	.xa_lock = __SPIN_LOCK_UNLOCKED(name.xa_lock),			\
 	.gfp_mask = (mask),						\
 	.rnode = NULL,							\
 }
 
 #define RADIX_TREE(name, mask) \
-	struct radix_tree_root name = RADIX_TREE_INIT(mask)
+	struct radix_tree_root name = RADIX_TREE_INIT(name, mask)
 
 #define INIT_RADIX_TREE(root, mask)					\
 do {									\
