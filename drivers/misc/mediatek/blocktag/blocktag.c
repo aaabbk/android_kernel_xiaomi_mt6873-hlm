@@ -213,18 +213,39 @@ static void _mtk_btag_pidlog_set_pid(struct page *p, int mode)
 
 	/* we do lockless operation here to favor performance */
 
-	if (mode == PIDLOG_MODE_BLK_SUBMIT_BIO) {
+	if (mode == PIDLOG_MODE_BLK_RQ_INSERT) {
 		/*
 		 * do not overwrite the real owner set by
 		 * mm or file system layer
 		 */
-		if (ppl->pid == 0xFFFF)
+		if (ppl->pid == 0xFFFF) {
 			ppl->pid = current->pid;
+			ppl->mode = mode;
+		}
 	} else {
 		/* the latest owner will be counted */
 		ppl->pid = current->pid;
+		ppl->mode = mode;
 	}
 }
+
+int mtk_btag_pidlog_get_mode(struct page *p)
+{
+	struct page_pid_logger *ppl;
+	unsigned long idx;
+
+	if (!mtk_btag_pagelogger || !p)
+		return -1;
+
+	idx = mtk_btag_pidlog_index(p);
+	ppl = mtk_btag_pidlog_entry(idx);
+
+	if (idx >= mtk_btag_pidlog_max_entry())
+		return -1;
+
+	return ppl->mode;
+}
+EXPORT_SYMBOL_GPL(mtk_btag_pidlog_get_mode);
 
 void mtk_btag_pidlog_copy_pid(struct page *src, struct page *dst)
 {
@@ -258,19 +279,33 @@ void mtk_btag_pidlog_submit_bio(struct bio *bio)
 	bio_for_each_segment(bvec, bio, iter) {
 		if (bvec.bv_page)
 			_mtk_btag_pidlog_set_pid(bvec.bv_page,
-				PIDLOG_MODE_BLK_SUBMIT_BIO);
+			PIDLOG_MODE_BLK_RQ_INSERT);
 	}
 }
 EXPORT_SYMBOL_GPL(mtk_btag_pidlog_submit_bio);
 
-void mtk_btag_pidlog_set_pid(struct page *p)
+void mtk_btag_pidlog_set_pid(struct page *p, int mode, bool write)
 {
 	if (!mtk_btag_pagelogger || !p)
 		return;
 
-	_mtk_btag_pidlog_set_pid(p, PIDLOG_MODE_MM_FS);
+	_mtk_btag_pidlog_set_pid(p, mode);
 }
 EXPORT_SYMBOL_GPL(mtk_btag_pidlog_set_pid);
+
+void mtk_btag_pidlog_set_pid_pages(struct page **page, int page_cnt,
+				   int mode, bool write)
+{
+	int i;
+
+	if (!mtk_btag_pagelogger || !page)
+		return;
+
+	for (i = 0; i < page_cnt; i++)
+		if (page[i])
+			_mtk_btag_pidlog_set_pid(page[i], mode);
+}
+EXPORT_SYMBOL_GPL(mtk_btag_pidlog_set_pid_pages);
 
 /* evaluate vmstat trace from global_node_page_state() */
 void mtk_btag_vmstat_eval(struct mtk_btag_vmstat *vm)
@@ -824,9 +859,9 @@ static int mtk_btag_seq_sub_show(struct seq_file *seq, void *v)
 
 	if (btag) {
 		mtk_btag_seq_debug_show_ringtrace(NULL, NULL, seq, btag);
-		if (btag->seq_show) {
+		if (btag->vops && btag->vops->seq_show) {
 			seq_printf(seq, "<%s: context info>\n", btag->name);
-			btag->seq_show(NULL, NULL, seq);
+			btag->vops->seq_show(NULL, NULL, seq);
 		}
 		mtk_btag_seq_sub_show_usedmem(NULL, NULL, seq, btag);
 	}
@@ -936,7 +971,7 @@ static const struct file_operations mtk_btag_mictx_sub_fops = {
 
 struct mtk_blocktag *mtk_btag_alloc(const char *name,
 	unsigned int ringtrace_count, size_t ctx_size, unsigned int ctx_count,
-	mtk_btag_seq_f seq_show)
+	struct mtk_btag_vops *vops)
 {
 	struct mtk_blocktag *btag;
 
@@ -955,7 +990,7 @@ struct mtk_blocktag *mtk_btag_alloc(const char *name,
 		return NULL;
 
 	memset(btag, 0, sizeof(struct mtk_blocktag));
-	btag->seq_show = seq_show;
+	btag->vops = vops;
 	btag->used_mem = sizeof(struct mtk_blocktag) +
 		(sizeof(struct mtk_btag_trace) * ringtrace_count) +
 		(ctx_count * ctx_size);
@@ -1074,10 +1109,10 @@ static void mtk_btag_seq_main_info(char **buff, unsigned long *size,
 
 	SPREAD_PRINTF(buff, size, seq, "[Info]\n");
 	list_for_each_entry_safe(btag, n, &mtk_btag_list, list)
-		if (btag->seq_show) {
+		if (btag->vops && btag->vops->seq_show) {
 			SPREAD_PRINTF(buff, size, seq, "<%s: context info>\n",
 					btag->name);
-			btag->seq_show(buff, size, seq);
+			btag->vops->seq_show(buff, size, seq);
 		}
 
 	SPREAD_PRINTF(buff, size, seq, "[Memory Usage]\n");
@@ -1169,6 +1204,7 @@ struct mtk_btag_mictx_struct *mtk_btag_mictx_get_ctx(void)
 }
 
 void mtk_btag_mictx_eval_tp(
+	struct mtk_blocktag *btag,
 	unsigned int write, __u64 usage, __u32 size)
 {
 	struct mtk_btag_mictx_struct *ctx;
@@ -1199,7 +1235,8 @@ void mtk_btag_mictx_eval_tp(
 }
 
 void mtk_btag_mictx_eval_req(
-	unsigned int write, __u32 cnt, __u32 size)
+	struct mtk_blocktag *btag,
+	unsigned int write, __u32 cnt, __u32 size, bool top)
 {
 	struct mtk_btag_mictx_struct *ctx;
 	struct mtk_btag_req_rw *reqrw;
@@ -1217,7 +1254,7 @@ void mtk_btag_mictx_eval_req(
 }
 
 void mtk_btag_mictx_update_ctx(
-	__u32 q_depth)
+	struct mtk_blocktag *btag, __u32 q_depth)
 {
 	struct mtk_btag_mictx_struct *ctx;
 	unsigned long flags;
