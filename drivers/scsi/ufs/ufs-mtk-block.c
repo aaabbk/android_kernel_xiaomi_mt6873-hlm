@@ -94,7 +94,7 @@ static struct ufs_mtk_bio_context_task *ufs_mtk_bio_curr_task(
 	return ufs_mtk_bio_get_task(ctx, task_id);
 }
 
-int mtk_btag_pidlog_add_ufs(struct request_queue *q, pid_t pid,
+int mtk_btag_pidlog_add_ufs(struct request_queue *q, short pid,
 	__u32 len, int rw)
 {
 	unsigned long flags;
