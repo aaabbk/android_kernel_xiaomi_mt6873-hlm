@@ -872,7 +872,7 @@ static struct platform_driver nebula_driver = {
 		   },
 };
 
-static int __init trusty_driver_init(void)
+static int __init __maybe_unused trusty_driver_init(void)
 {
 	int ret = 0;
 
@@ -905,3 +905,4 @@ static void __exit trusty_driver_exit(void)
 module_exit(trusty_driver_exit);
 
 MODULE_LICENSE("GPL");
+
