@@ -901,8 +901,7 @@ static void __exit trusty_driver_exit(void)
 }
 
 //subsys_initcall(trusty_driver_init);
-arch_initcall(trusty_driver_init);
+//arch_initcall(trusty_driver_init); /* Disable GenieZone trusty driver to match official kernel */
 module_exit(trusty_driver_exit);
 
 MODULE_LICENSE("GPL");
-
