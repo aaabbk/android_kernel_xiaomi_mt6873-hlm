@@ -71,7 +71,7 @@ uint64_t sdsp_elf_pa[2] = { 0, 0 };
 #include "mtee_ut/gz_sec_storage_ut.h"
 #endif
 
-#define KREE_DEBUG(fmt...) pr_debug("[KREE]" fmt)
+#define KREE_DEBUG(fmt...) pr_info("[KREE]" fmt)
 #define KREE_INFO(fmt...) pr_info("[KREE]" fmt)
 #define KREE_ERR(fmt...) pr_info("[KREE][ERR]" fmt)
 
@@ -1443,6 +1443,8 @@ static int __init gz_init(void)
 {
 	int res;
 
+	pr_info("GZ: gz_init start\n");
+
 	tz_system_dev = NULL;
 
 	res = create_files();
@@ -1478,7 +1480,7 @@ static int __init gz_init(void)
 	register_devapc_vio_callback(&gz_devapc_vio_handle);
 #endif
 
-
+	pr_info("GZ: gz_init done, res=%d\n", res);
 	return res;
 }
 

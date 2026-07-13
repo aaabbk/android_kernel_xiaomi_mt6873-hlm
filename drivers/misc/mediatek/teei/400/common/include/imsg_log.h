@@ -57,11 +57,11 @@ static inline unsigned long now_ms(void)
 #define IMSG_PRINT_ERROR(fmt, ...)      pr_notice(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_WARN(fmt, ...)       pr_notice(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_INFO(fmt, ...)       pr_info(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_DEBUG(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_TRACE(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_ENTER(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_LEAVE(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_PROFILE(fmt, ...)    pr_debug(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_DEBUG(fmt, ...)     pr_info(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_TRACE(fmt, ...)     pr_info(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_ENTER(fmt, ...)      pr_info(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_LEAVE(fmt, ...)      pr_info(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_PROFILE(fmt, ...)    pr_info(fmt, ##__VA_ARGS__)
 
 #define IMSG_PRINT(level, func, fmt, ...) \
 	do { \

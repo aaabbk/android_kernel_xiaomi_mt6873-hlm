@@ -1027,8 +1027,10 @@ static int teei_probe(struct platform_device *pdev)
 {
 	int ut_irq = 0;
 
+	pr_info("TEEI: teei_probe start\n");
+
 	ut_irq = platform_get_irq(pdev, 0);
-	IMSG_INFO("teei device ut_irq is %d\n", ut_irq);
+	pr_info("TEEI: teei_probe ut_irq=%d\n", ut_irq);
 
 	if (init_sysfs(pdev) < 0) {
 		IMSG_ERROR("failed to init tz_driver sysfs\n");
@@ -1040,6 +1042,7 @@ static int teei_probe(struct platform_device *pdev)
 		return -1;
 	}
 
+	pr_info("TEEI: teei_probe success\n");
 	return 0;
 }
 
@@ -1080,6 +1083,8 @@ static int teei_client_init(void)
 
 	struct sched_param param = {.sched_priority = 50 };
 
+	pr_info("TEEI: teei_client_init start\n");
+
 	/* IMSG_DEBUG("TEEI Agent Driver Module Init ...\n"); */
 
 	IMSG_DEBUG("=====================================================\n\n");
@@ -1099,6 +1104,7 @@ static int teei_client_init(void)
 		IMSG_ERROR("unable to register teei driver(%d)\n", ret_code);
 		return ret_code;
 	}
+	pr_info("TEEI: platform_driver_register done\n");
 
 	tz_drv_state = kzalloc(sizeof(struct tz_driver_state), GFP_KERNEL);
 	if (!tz_drv_state)
@@ -1228,6 +1234,8 @@ static int teei_client_init(void)
 	IMSG_DEBUG("create the sub_thread successfully!\n");
 
 	teei_config_init();
+
+	pr_info("TEEI: teei_client_init done\n");
 
 	goto return_fn;
 

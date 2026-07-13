@@ -205,6 +205,7 @@ soter_config_shm_memremap(void **memremaped_shm)
 	}
 
 	size = teei_get_reserved_mem_size();
+	pr_info("TEEI: SMC get_reserved_mem_size = 0x%zx\n", size);
 	if (size == 0) {
 		IMSG_ERROR("Failed to get the reserved memory size.\n");
 		kfree(reserved_mem);
@@ -212,6 +213,7 @@ soter_config_shm_memremap(void **memremaped_shm)
 	}
 
 	paddr = teei_get_reserved_mem_paddr();
+	pr_info("TEEI: SMC get_reserved_mem_paddr = 0x%llx\n", (unsigned long long)paddr);
 	if (paddr == 0) {
 		IMSG_ERROR("Failed to reserved shared memory\n");
 		kfree(reserved_mem);
@@ -285,6 +287,8 @@ static int __init soter_driver_init(void)
 	void *memremaped_shm = NULL;
 	int rc;
 
+	pr_info("TEEI: soter_driver_init start\n");
+
 	soter_priv = kzalloc(sizeof(*soter_priv), GFP_KERNEL);
 	if (!soter_priv) {
 		rc = -ENOMEM;
@@ -292,8 +296,11 @@ static int __init soter_driver_init(void)
 	}
 
 	pool = soter_config_shm_memremap(&memremaped_shm);
-	if (IS_ERR(pool))
+	if (IS_ERR(pool)) {
+		pr_info("TEEI: soter_config_shm_memremap failed: %ld\n", PTR_ERR(pool));
 		return PTR_ERR(pool);
+	}
+	pr_info("TEEI: soter_config_shm_memremap success\n");
 	soter_priv->pool = pool;
 	soter_priv->memremaped_shm = memremaped_shm;
 
@@ -308,6 +315,7 @@ static int __init soter_driver_init(void)
 	if (rc)
 		goto err;
 
+	pr_info("TEEI: soter_driver_init done\n");
 	return 0;
 
 err:
