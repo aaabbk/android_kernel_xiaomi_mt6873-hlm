@@ -106,7 +106,7 @@ int mtk_btag_pidlog_add_ufs(struct request_queue *q, pid_t pid,
 
 	spin_lock_irqsave(&ctx->lock, flags);
 	mtk_btag_pidlog_insert(&ctx->pidlog, pid, len, rw);
-	mtk_btag_mictx_eval_req(rw, 1, len);
+	mtk_btag_mictx_eval_req(NULL, rw, 1, len, false);
 	spin_unlock_irqrestore(&ctx->lock, flags);
 
 	return 1;
@@ -165,7 +165,7 @@ void ufs_mtk_biolog_queue_command(unsigned int task_id, struct scsi_cmnd *cmd)
 		ctx->period_start_t = tsk->t[tsk_request_start];
 
 	ctx->q_depth++;
-	mtk_btag_mictx_update_ctx(ctx->q_depth);
+	mtk_btag_mictx_update_ctx(NULL, ctx->q_depth);
 
 	spin_unlock_irqrestore(&ctx->lock, flags);
 
@@ -241,11 +241,11 @@ void ufs_mtk_biolog_scsi_done_end(unsigned int task_id)
 		size = tsk->len << SECTOR_SHIFT;
 		tp->usage += busy_time;
 		tp->size += size;
-		mtk_btag_mictx_eval_tp(rw, busy_time, size);
+		mtk_btag_mictx_eval_tp(NULL, rw, busy_time, size);
 	}
 
 	ctx->q_depth--;
-	mtk_btag_mictx_update_ctx(ctx->q_depth);
+	mtk_btag_mictx_update_ctx(NULL, ctx->q_depth);
 
 	spin_unlock_irqrestore(&ctx->lock, flags);
 
@@ -413,11 +413,15 @@ int ufs_mtk_biolog_init(void)
 {
 	struct mtk_blocktag *btag;
 
+	static struct mtk_btag_vops ufs_btag_vops = {
+		.seq_show = ufs_mtk_bio_seq_debug_show_info,
+	};
+
 	btag = mtk_btag_alloc("ufs",
 		UFS_BIOLOG_RINGBUF_MAX,
 		sizeof(struct ufs_mtk_bio_context),
 		UFS_BIOLOG_CONTEXTS,
-		ufs_mtk_bio_seq_debug_show_info);
+		&ufs_btag_vops);
 
 	if (btag) {
 		struct ufs_mtk_bio_context *ctx;
