@@ -423,6 +423,13 @@ config MTK_GCOV_KERNEL
 	  Select "Y" if you want to use.
 	  Select "N" if you are not sure.
 
+config MTK_APEX_DEBUG
+	bool "APEX boot debug tracing"
+	default n
+	help
+	  Enable debug tracing for apexd boot issues. Prints block device
+	  status and process stack traces periodically and on panic.
+
 config XIAOMI_MOTOR_DRV8846
 	bool "xiaomi MOTOR DRV8846 ENABLE"
 	default n
