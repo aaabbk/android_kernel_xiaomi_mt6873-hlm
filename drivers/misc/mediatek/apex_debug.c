@@ -1,7 +1,8 @@
 /*
  * apex_debug.c - Debug tracing for apexd boot issues
  *
- * Prints block device status, process stack traces via IPI.
+ * Prints block device status, process stack traces via IPI,
+ * and traces init (pid=1) syscalls to find busy-loop cause.
  */
 
 #include <linux/module.h>
@@ -19,6 +20,8 @@
 #include <linux/fs.h>
 #include <linux/smp.h>
 #include <linux/cpumask.h>
+#include <linux/irq_regs.h>
+#include <asm/ptrace.h>
 
 extern struct class block_class;
 extern unsigned long get_wchan(struct task_struct *p);
@@ -32,7 +35,29 @@ static void ipi_dump_current_stack(void *info)
 	pr_err("APEX_CPU: cpu=%d comm=%s pid=%d state=%ld\n",
 		cpu, t->comm, t->pid, t->state);
 
-	if (strncmp(t->comm, "init", 4) == 0 && t->pid == 1) {
+	if (t->pid == 1) {
+		/* Try to get user-space registers from irq_regs */
+		struct pt_regs *irq_regs = get_irq_regs();
+		if (irq_regs) {
+			if (user_mode(irq_regs)) {
+				pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
+					irq_regs->pc, irq_regs->regs[30]);
+			} else {
+				pr_err("APEX_CPU: init KERNEL PC=0x%llx LR=0x%llx\n",
+					irq_regs->pc, irq_regs->regs[30]);
+			}
+		} else {
+			/* Fallback: use task_pt_regs */
+			struct pt_regs *task_regs = task_pt_regs(t);
+			if (task_regs && user_mode(task_regs)) {
+				pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
+					task_regs->pc, task_regs->regs[30]);
+			} else if (task_regs) {
+				pr_err("APEX_CPU: init KERNEL PC=0x%llx\n",
+					task_regs->pc);
+			}
+		}
+
 		pr_err("APEX_CPU: === INIT PID=1 ON CPU %d ===\n", cpu);
 		dump_stack();
 		pr_err("APEX_CPU: === END INIT STACK ===\n");
@@ -81,7 +106,6 @@ static void apex_debug_dump_state(void)
 
 	pr_err("APEX_DBG: === DUMP START ===\n");
 
-	/* Only count devices, don't list them all */
 	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
 		disk = dev_to_disk(dev);
@@ -118,8 +142,7 @@ static void apex_debug_dump_state(void)
 					t->comm);
 
 			/* If init pid=1 is running, send IPI for real stack */
-			if (t->state == 0 && t->pid == 1 &&
-			    strncmp(t->comm, "init", 4) == 0) {
+			if (t->state == 0 && t->pid == 1) {
 				int target_cpu = task_cpu(t);
 				pr_err("APEX_DBG: IPI->cpu%d for init\n",
 					target_cpu);
@@ -179,10 +202,69 @@ static struct notifier_block apex_debug_panic_nb = {
 	.priority = 1,
 };
 
+/*
+ * Init syscall tracer: trace init (pid=1) syscalls
+ * via trace_event to find the busy-loop cause.
+ * We use a kretprobe-like approach by hooking into the syscall path.
+ */
+
+/* Counter for init syscalls */
+static atomic_t init_syscall_count = ATOMIC_INIT(0);
+
+/* Trace init's syscalls by hooking into the main event loop.
+ * We use a timer to periodically check what syscall init is making. */
+static struct delayed_work init_trace_work;
+
+static void init_trace_worker(struct work_struct *work)
+{
+	struct task_struct *init_task;
+	static int trace_count = 0;
+	unsigned long wchan;
+
+	rcu_read_lock();
+	init_task = find_task_by_vpid(1);
+	if (init_task) {
+		get_task_struct(init_task);
+	}
+	rcu_read_unlock();
+
+	if (!init_task)
+		goto resched;
+
+	/* Check if init is still running (busy-loop) */
+	wchan = get_wchan(init_task);
+	if (!wchan) {
+		/* Init is running - log its state */
+		int cpu = task_cpu(init_task);
+		pr_err("INIT_TRACE: [%d] init running on cpu=%d state=%ld\n",
+			trace_count, cpu, init_task->state);
+
+		/* Send IPI to get stack */
+		smp_call_function_single(cpu, ipi_dump_current_stack, NULL, 1);
+	} else {
+		pr_err("INIT_TRACE: [%d] init sleeping wchan=%pS\n",
+			trace_count, (void *)wchan);
+	}
+
+	put_task_struct(init_task);
+
+resched:
+	trace_count++;
+	if (trace_count < 60) {
+		/* Trace every 500ms for more detail */
+		schedule_delayed_work(&init_trace_work, msecs_to_jiffies(500));
+	}
+}
+
 static int __init apex_debug_init(void)
 {
 	INIT_DELAYED_WORK(&apex_debug_work, apex_debug_worker);
 	schedule_delayed_work(&apex_debug_work, msecs_to_jiffies(12000));
+
+	/* Start init tracing earlier, at 10s */
+	INIT_DELAYED_WORK(&init_trace_work, init_trace_worker);
+	schedule_delayed_work(&init_trace_work, msecs_to_jiffies(10000));
+
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &apex_debug_panic_nb);
 	pr_err("APEX_DBG: initialized\n");
