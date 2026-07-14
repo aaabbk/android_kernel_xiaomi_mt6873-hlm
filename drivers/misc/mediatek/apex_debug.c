@@ -1,8 +1,7 @@
 /*
  * apex_debug.c - Debug tracing for apexd boot issues
  *
- * Prints block device status, process stack traces via IPI,
- * and traces init (pid=1) syscalls to find busy-loop cause.
+ * Traces init's poll() syscalls to confirm the busy-loop cause.
  */
 
 #include <linux/module.h>
@@ -20,19 +19,18 @@
 #include <linux/fs.h>
 #include <linux/smp.h>
 #include <linux/cpumask.h>
+#include <linux/ptrace.h>
+#include <linux/poll.h>
 #include <asm/ptrace.h>
 
 extern struct class block_class;
 extern unsigned long get_wchan(struct task_struct *p);
 
-/* IPI handler: dump stack of whatever is running on this CPU */
+/* IPI handler: dump user-space PC of init */
 static void ipi_dump_current_stack(void *info)
 {
 	struct task_struct *t = current;
 	int cpu = smp_processor_id();
-
-	pr_err("APEX_CPU: cpu=%d comm=%s pid=%d state=%ld\n",
-		cpu, t->comm, t->pid, t->state);
 
 	if (t->pid == 1) {
 		struct pt_regs *task_regs = task_pt_regs(t);
@@ -43,10 +41,6 @@ static void ipi_dump_current_stack(void *info)
 			pr_err("APEX_CPU: init KERNEL PC=0x%llx\n",
 				task_regs->pc);
 		}
-
-		pr_err("APEX_CPU: === INIT PID=1 ON CPU %d ===\n", cpu);
-		dump_stack();
-		pr_err("APEX_CPU: === END INIT STACK ===\n");
 	}
 }
 
@@ -84,28 +78,9 @@ static void apex_debug_dump_fds(struct task_struct *t)
 
 static void apex_debug_dump_state(void)
 {
-	struct class_dev_iter iter;
-	struct device *dev;
-	struct gendisk *disk;
-	int loop_count = 0, dm_count = 0;
 	struct task_struct *t;
 
 	pr_err("APEX_DBG: === DUMP START ===\n");
-
-	class_dev_iter_init(&iter, &block_class, NULL, NULL);
-	while ((dev = class_dev_iter_next(&iter))) {
-		disk = dev_to_disk(dev);
-		if (!disk)
-			continue;
-		if (disk->disk_name[0] != '\0') {
-			if (strncmp(disk->disk_name, "loop", 4) == 0)
-				loop_count++;
-			if (strncmp(disk->disk_name, "dm-", 3) == 0)
-				dm_count++;
-		}
-	}
-	class_dev_iter_exit(&iter);
-	pr_err("APEX_DBG: %d loop, %d dm devices\n", loop_count, dm_count);
 
 	rcu_read_lock();
 	for_each_process(t) {
@@ -127,7 +102,6 @@ static void apex_debug_dump_state(void)
 				pr_err("APEX_DBG: %s wchan=(running)\n",
 					t->comm);
 
-			/* If init pid=1 is running, send IPI for real stack */
 			if (t->state == 0 && t->pid == 1) {
 				int target_cpu = task_cpu(t);
 				pr_err("APEX_DBG: IPI->cpu%d for init\n",
@@ -135,7 +109,6 @@ static void apex_debug_dump_state(void)
 				smp_call_function_single(target_cpu,
 					ipi_dump_current_stack, NULL, 1);
 			} else if (t->state != 0) {
-				/* Sleeping: use save_stack_trace_tsk */
 				struct stack_trace trace;
 				unsigned long entries[32];
 				int i;
@@ -153,7 +126,6 @@ static void apex_debug_dump_state(void)
 						i, (void *)entries[i]);
 			}
 
-			/* Only dump fds for apexd and init pid=1 */
 			if (strncmp(t->comm, "apexd", 5) == 0 || t->pid == 1)
 				apex_debug_dump_fds(t);
 		}
@@ -188,14 +160,7 @@ static struct notifier_block apex_debug_panic_nb = {
 	.priority = 1,
 };
 
-/*
- * Init syscall tracer: trace init (pid=1) syscalls
- * via trace_event to find the busy-loop cause.
- * We use a kretprobe-like approach by hooking into the syscall path.
- */
-
-/* Trace init's syscalls by hooking into the main event loop.
- * We use a timer to periodically check what syscall init is making. */
+/* Init tracer: every 500ms, send IPI to get init's user-space PC */
 static struct delayed_work init_trace_work;
 
 static void init_trace_worker(struct work_struct *work)
@@ -206,23 +171,18 @@ static void init_trace_worker(struct work_struct *work)
 
 	rcu_read_lock();
 	init_task = find_task_by_vpid(1);
-	if (init_task) {
+	if (init_task)
 		get_task_struct(init_task);
-	}
 	rcu_read_unlock();
 
 	if (!init_task)
 		goto resched;
 
-	/* Check if init is still running (busy-loop) */
 	wchan = get_wchan(init_task);
 	if (!wchan) {
-		/* Init is running - log its state */
 		int cpu = task_cpu(init_task);
-		pr_err("INIT_TRACE: [%d] init running on cpu=%d state=%ld\n",
-			trace_count, cpu, init_task->state);
-
-		/* Send IPI to get stack */
+		pr_err("INIT_TRACE: [%d] init RUNNING cpu=%d\n",
+			trace_count, cpu);
 		smp_call_function_single(cpu, ipi_dump_current_stack, NULL, 1);
 	} else {
 		pr_err("INIT_TRACE: [%d] init sleeping wchan=%pS\n",
@@ -233,10 +193,8 @@ static void init_trace_worker(struct work_struct *work)
 
 resched:
 	trace_count++;
-	if (trace_count < 60) {
-		/* Trace every 500ms for more detail */
+	if (trace_count < 60)
 		schedule_delayed_work(&init_trace_work, msecs_to_jiffies(500));
-	}
 }
 
 static int __init apex_debug_init(void)
@@ -244,7 +202,6 @@ static int __init apex_debug_init(void)
 	INIT_DELAYED_WORK(&apex_debug_work, apex_debug_worker);
 	schedule_delayed_work(&apex_debug_work, msecs_to_jiffies(12000));
 
-	/* Start init tracing earlier, at 10s */
 	INIT_DELAYED_WORK(&init_trace_work, init_trace_worker);
 	schedule_delayed_work(&init_trace_work, msecs_to_jiffies(10000));
 
