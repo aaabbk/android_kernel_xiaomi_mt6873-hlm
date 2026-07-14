@@ -1412,6 +1412,58 @@ out_unfreeze:
 	return err;
 }
 
+static int loop_configure(struct loop_device *lo, fmode_t mode,
+			  struct block_device *bdev,
+			  struct loop_config __user *arg)
+{
+	struct loop_config config;
+	struct loop_info64 *info = &config.info;
+	int err;
+
+	if (copy_from_user(&config, arg, sizeof(config)))
+		return -EFAULT;
+
+	if (config.__reserved[0] || config.__reserved[1] ||
+	    config.__reserved[2] || config.__reserved[3] ||
+	    config.__reserved[4] || config.__reserved[5] ||
+	    config.__reserved[6] || config.__reserved[7])
+		return -EINVAL;
+
+	if (config.block_size && (config.block_size < 512 ||
+	    config.block_size > PAGE_SIZE || !is_power_of_2(config.block_size)))
+		return -EINVAL;
+
+	/* STEP 1: LOOP_SET_FD equivalent */
+	err = loop_set_fd(lo, mode, bdev, config.fd);
+	if (err)
+		return err;
+
+	/* STEP 2: LOOP_SET_STATUS64 equivalent (only if info is non-zero) */
+	if (memchr_inv(info, 0, sizeof(*info))) {
+		err = loop_set_status(lo, info);
+		if (err)
+			goto out_clr_fd;
+	}
+
+	/* STEP 3: LOOP_SET_BLOCK_SIZE equivalent */
+	if (config.block_size) {
+		err = loop_set_block_size(lo, config.block_size);
+		if (err)
+			goto out_clr_fd;
+	}
+
+	return 0;
+
+out_clr_fd:
+	/* On failure, clear the fd we just set.
+	 * loop_clr_fd() may unlock lo_ctl_mutex on success.
+	 * If it does, re-lock so that lo_ioctl's mutex_unlock is balanced.
+	 */
+	if (!loop_clr_fd(lo))
+		mutex_lock(&lo->lo_ctl_mutex);
+	return err;
+}
+
 static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
 {
@@ -1466,6 +1518,12 @@ static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 		err = -EPERM;
 		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
 			err = loop_set_block_size(lo, arg);
+		break;
+	case LOOP_CONFIGURE:
+		err = -EPERM;
+		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
+			err = loop_configure(lo, mode, bdev,
+					     (struct loop_config __user *)arg);
 		break;
 	default:
 		err = lo->ioctl ? lo->ioctl(lo, cmd, arg) : -EINVAL;
@@ -1624,6 +1682,7 @@ static int lo_compat_ioctl(struct block_device *bdev, fmode_t mode,
 	case LOOP_CHANGE_FD:
 	case LOOP_SET_BLOCK_SIZE:
 	case LOOP_SET_DIRECT_IO:
+	case LOOP_CONFIGURE:
 		err = lo_ioctl(bdev, mode, cmd, arg);
 		break;
 	default:
