@@ -27,6 +27,7 @@ enum {
 
 #include <asm/posix_types.h>	/* for __kernel_old_dev_t */
 #include <linux/types.h>	/* for __u64 */
+#include <asm/ioctl.h>		/* for _IOW */
 
 /* Backwards compatibility version */
 struct loop_info {
@@ -90,18 +91,21 @@ struct loop_info64 {
 #define LOOP_SET_CAPACITY	0x4C07
 #define LOOP_SET_DIRECT_IO	0x4C08
 #define LOOP_SET_BLOCK_SIZE	0x4C09
-#define LOOP_CONFIGURE		0x4C0A
 
-/* /dev/loop-control interface */
-#define LOOP_CTL_ADD		0x4C80
-#define LOOP_CTL_REMOVE		0x4C81
-#define LOOP_CTL_GET_FREE	0x4C82
-
-/* Backport from Linux 5.8: LOOP_CONFIGURE ioctl */
+/* Backport from Linux 5.8: LOOP_CONFIGURE ioctl.
+ * struct loop_config must be defined before LOOP_CONFIGURE
+ * because _IOW needs sizeof(struct loop_config). */
 struct loop_config {
 	__u32	fd;
 	__u32	block_size;
 	struct loop_info64	info;
 	__u64	__reserved[8];
 };
+
+#define LOOP_CONFIGURE	_IOW('L', 0x0A, struct loop_config)
+
+/* /dev/loop-control interface */
+#define LOOP_CTL_ADD		0x4C80
+#define LOOP_CTL_REMOVE		0x4C81
+#define LOOP_CTL_GET_FREE	0x4C82
 #endif /* _UAPI_LINUX_LOOP_H */

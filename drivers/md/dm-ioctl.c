@@ -749,9 +749,13 @@ static int dev_create(struct file *filp, struct dm_ioctl *param, size_t param_si
 	int r, m = DM_ANY_MINOR;
 	struct mapped_device *md;
 
+	pr_info("DM: dev_create name=%s\n", param->name);
+
 	r = check_name(param->name);
-	if (r)
+	if (r) {
+		pr_info("DM: dev_create check_name failed=%d\n", r);
 		return r;
+	}
 
 	if (param->flags & DM_PERSISTENT_DEV_FLAG)
 		m = MINOR(huge_decode_dev(param->dev));
@@ -773,6 +777,7 @@ static int dev_create(struct file *filp, struct dm_ioctl *param, size_t param_si
 
 	dm_put(md);
 
+	pr_info("DM: dev_create name=%s success\n", param->name);
 	return 0;
 }
 
@@ -1015,11 +1020,14 @@ static int do_resume(struct dm_ioctl *param)
 	struct mapped_device *md;
 	struct dm_table *new_map, *old_map = NULL;
 
+	pr_info("DM: do_resume name=%s\n", param->name);
+
 	down_write(&_hash_lock);
 
 	hc = __find_device_hash_cell(param);
 	if (!hc) {
 		DMDEBUG_LIMIT("device doesn't appear to be in the dev hash table.");
+		pr_info("DM: do_resume device not found\n");
 		up_write(&_hash_lock);
 		return -ENXIO;
 	}
@@ -1310,9 +1318,13 @@ static int table_load(struct file *filp, struct dm_ioctl *param, size_t param_si
 	struct mapped_device *md;
 	struct target_type *immutable_target_type;
 
+	pr_info("DM: table_load name=%s targets=%u\n", param->name, param->target_count);
+
 	md = find_device(param);
-	if (!md)
+	if (!md) {
+		pr_info("DM: table_load name=%s find_device failed\n", param->name);
 		return -ENXIO;
+	}
 
 	r = dm_table_create(&t, get_mode(param), param->target_count, md);
 	if (r)

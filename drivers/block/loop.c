@@ -1420,38 +1420,60 @@ static int loop_configure(struct loop_device *lo, fmode_t mode,
 	struct loop_info64 *info = &config.info;
 	int err;
 
-	if (copy_from_user(&config, arg, sizeof(config)))
+	pr_info("LOOP_CONFIGURE: lo=%d start\n", lo->lo_number);
+
+	if (copy_from_user(&config, arg, sizeof(config))) {
+		pr_info("LOOP_CONFIGURE: lo=%d copy_from_user failed\n", lo->lo_number);
 		return -EFAULT;
+	}
 
 	if (config.__reserved[0] || config.__reserved[1] ||
 	    config.__reserved[2] || config.__reserved[3] ||
 	    config.__reserved[4] || config.__reserved[5] ||
-	    config.__reserved[6] || config.__reserved[7])
+	    config.__reserved[6] || config.__reserved[7]) {
+		pr_info("LOOP_CONFIGURE: lo=%d reserved fields non-zero\n", lo->lo_number);
 		return -EINVAL;
+	}
 
 	if (config.block_size && (config.block_size < 512 ||
-	    config.block_size > PAGE_SIZE || !is_power_of_2(config.block_size)))
+	    config.block_size > PAGE_SIZE || !is_power_of_2(config.block_size))) {
+		pr_info("LOOP_CONFIGURE: lo=%d invalid block_size=%u\n", lo->lo_number, config.block_size);
 		return -EINVAL;
+	}
+
+	pr_info("LOOP_CONFIGURE: lo=%d fd=%u block_size=%u info_nonzero=%d\n",
+		lo->lo_number, config.fd, config.block_size,
+		memchr_inv(info, 0, sizeof(*info)) ? 1 : 0);
 
 	/* STEP 1: LOOP_SET_FD equivalent */
 	err = loop_set_fd(lo, mode, bdev, config.fd);
-	if (err)
+	if (err) {
+		pr_info("LOOP_CONFIGURE: lo=%d loop_set_fd failed=%d\n", lo->lo_number, err);
 		return err;
+	}
+	pr_info("LOOP_CONFIGURE: lo=%d loop_set_fd success\n", lo->lo_number);
 
 	/* STEP 2: LOOP_SET_STATUS64 equivalent (only if info is non-zero) */
 	if (memchr_inv(info, 0, sizeof(*info))) {
 		err = loop_set_status(lo, info);
-		if (err)
+		if (err) {
+			pr_info("LOOP_CONFIGURE: lo=%d loop_set_status failed=%d\n", lo->lo_number, err);
 			goto out_clr_fd;
+		}
+		pr_info("LOOP_CONFIGURE: lo=%d loop_set_status success\n", lo->lo_number);
 	}
 
 	/* STEP 3: LOOP_SET_BLOCK_SIZE equivalent */
 	if (config.block_size) {
 		err = loop_set_block_size(lo, config.block_size);
-		if (err)
+		if (err) {
+			pr_info("LOOP_CONFIGURE: lo=%d loop_set_block_size failed=%d\n", lo->lo_number, err);
 			goto out_clr_fd;
+		}
+		pr_info("LOOP_CONFIGURE: lo=%d loop_set_block_size success\n", lo->lo_number);
 	}
 
+	pr_info("LOOP_CONFIGURE: lo=%d done\n", lo->lo_number);
 	return 0;
 
 out_clr_fd:

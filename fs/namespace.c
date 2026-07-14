@@ -2854,6 +2854,17 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	unsigned int mnt_flags = 0, sb_flags;
 	int retval = 0;
 
+	if (dev_name && type_page && (strcmp(type_page, "ext4") == 0 || strcmp(type_page, "f2fs") == 0)) {
+		char dir_buf[96];
+		long copied = strncpy_from_user(dir_buf, dir_name, sizeof(dir_buf) - 1);
+		if (copied > 0) {
+			dir_buf[copied] = 0;
+			if (strstr(dir_buf, "/apex/") || strstr(dir_buf, "/dm-"))
+				pr_info("MOUNT: dev=%s dir=%s type=%s flags=0x%lx\n",
+					dev_name, dir_buf, type_page, flags);
+		}
+	}
+
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
 		flags &= ~MS_MGC_MSK;
