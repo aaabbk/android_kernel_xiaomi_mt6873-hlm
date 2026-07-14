@@ -1,7 +1,7 @@
 /*
  * apex_debug.c - Debug tracing for apexd boot issues
  *
- * Traces init's poll() syscalls to confirm the busy-loop cause.
+ * Traces init's poll() by reading pollfd from user-space stack via IPI.
  */
 
 #include <linux/module.h>
@@ -9,37 +9,62 @@
 #include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
-#include <linux/blkdev.h>
 #include <linux/device.h>
-#include <linux/genhd.h>
 #include <linux/kobject.h>
 #include <linux/stacktrace.h>
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/smp.h>
-#include <linux/cpumask.h>
-#include <linux/ptrace.h>
+#include <linux/uaccess.h>
 #include <linux/poll.h>
 #include <asm/ptrace.h>
 
 extern struct class block_class;
 extern unsigned long get_wchan(struct task_struct *p);
 
-/* IPI handler: dump user-space PC of init */
+/* IPI handler: dump init's user-space PC and read pollfd from stack.
+ * Runs in interrupt context on init's CPU, with current=init. */
 static void ipi_dump_current_stack(void *info)
 {
 	struct task_struct *t = current;
+	struct pt_regs *regs;
 
-	if (t->pid == 1) {
-		struct pt_regs *task_regs = task_pt_regs(t);
-		if (task_regs && user_mode(task_regs)) {
-			pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
-				task_regs->pc, task_regs->regs[30]);
-		} else if (task_regs) {
-			pr_err("APEX_CPU: init KERNEL PC=0x%llx\n",
-				task_regs->pc);
+	if (t->pid != 1)
+		return;
+
+	regs = task_pt_regs(t);
+	if (!regs)
+		return;
+
+	if (user_mode(regs)) {
+		unsigned long sp = regs->sp;
+		struct pollfd pfd;
+		int i;
+		/* pollfd offsets from disassembly: sp+0x1d8 is primary.
+		 * Also check nearby offsets in case stack layout varies. */
+		int offsets[] = {0x1d8, 0x1e0, 0x1d0, 0x1c8, 0x1e8};
+
+		pr_err("APEX_CPU: init PC=0x%llx LR=0x%llx SP=0x%llx\n",
+			regs->pc, regs->regs[30], sp);
+
+		/* Read pollfd from user-space stack.
+		 * Use _inatomic variant since we're in IPI context. */
+		for (i = 0; i < 5; i++) {
+			unsigned long addr = sp + offsets[i];
+
+			if (!copy_from_user_inatomic(&pfd,
+					(void __user *)addr,
+					sizeof(pfd))) {
+				if (pfd.fd >= 0 && pfd.fd < 64) {
+					pr_err("APEX_CPU: pollfd sp+0x%x: fd=%d events=0x%x revents=0x%x\n",
+						offsets[i], pfd.fd,
+						pfd.events, pfd.revents);
+				}
+			}
 		}
+	} else {
+		pr_err("APEX_CPU: init KERNEL PC=0x%llx\n", regs->pc);
 	}
 }
 
