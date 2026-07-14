@@ -20,7 +20,6 @@
 #include <linux/fs.h>
 #include <linux/smp.h>
 #include <linux/cpumask.h>
-#include <linux/irq_regs.h>
 #include <asm/ptrace.h>
 
 extern struct class block_class;
@@ -36,26 +35,13 @@ static void ipi_dump_current_stack(void *info)
 		cpu, t->comm, t->pid, t->state);
 
 	if (t->pid == 1) {
-		/* Try to get user-space registers from irq_regs */
-		struct pt_regs *irq_regs = get_irq_regs();
-		if (irq_regs) {
-			if (user_mode(irq_regs)) {
-				pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
-					irq_regs->pc, irq_regs->regs[30]);
-			} else {
-				pr_err("APEX_CPU: init KERNEL PC=0x%llx LR=0x%llx\n",
-					irq_regs->pc, irq_regs->regs[30]);
-			}
-		} else {
-			/* Fallback: use task_pt_regs */
-			struct pt_regs *task_regs = task_pt_regs(t);
-			if (task_regs && user_mode(task_regs)) {
-				pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
-					task_regs->pc, task_regs->regs[30]);
-			} else if (task_regs) {
-				pr_err("APEX_CPU: init KERNEL PC=0x%llx\n",
-					task_regs->pc);
-			}
+		struct pt_regs *task_regs = task_pt_regs(t);
+		if (task_regs && user_mode(task_regs)) {
+			pr_err("APEX_CPU: init USER PC=0x%llx LR=0x%llx\n",
+				task_regs->pc, task_regs->regs[30]);
+		} else if (task_regs) {
+			pr_err("APEX_CPU: init KERNEL PC=0x%llx\n",
+				task_regs->pc);
 		}
 
 		pr_err("APEX_CPU: === INIT PID=1 ON CPU %d ===\n", cpu);
