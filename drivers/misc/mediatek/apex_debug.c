@@ -1,7 +1,7 @@
 /*
  * apex_debug.c - Debug tracing for apexd boot issues
  *
- * Prints block device (loop/DM) status periodically and on panic.
+ * Prints block device status, apexd process state, and stack trace.
  */
 
 #include <linux/module.h>
@@ -13,7 +13,11 @@
 #include <linux/device.h>
 #include <linux/genhd.h>
 #include <linux/kobject.h>
-#include <linux/kernel.h>
+#include <linux/stacktrace.h>
+#include <linux/fdtable.h>
+#include <linux/file.h>
+#include <linux/fs.h>
+#include <linux/syscalls.h>
 
 extern struct class block_class;
 
@@ -23,10 +27,10 @@ static void apex_debug_dump_state(void)
 	struct device *dev;
 	struct gendisk *disk;
 	int loop_count = 0, dm_count = 0;
+	struct task_struct *t;
 
 	pr_err("APEX_DBG: === BLOCK DEVICE DUMP ===\n");
 
-	/* Use NULL for device type to iterate all block devices */
 	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
 		disk = dev_to_disk(dev);
@@ -35,36 +39,82 @@ static void apex_debug_dump_state(void)
 
 		if (disk->disk_name[0] != '\0' &&
 		    strncmp(disk->disk_name, "loop", 4) == 0) {
-			pr_err("APEX_DBG: %s major=%d first_minor=%d\n",
-				disk->disk_name, disk->major,
-				disk->first_minor);
+			pr_err("APEX_DBG: %s major=%d\n",
+				disk->disk_name, disk->major);
 			loop_count++;
 		}
 		if (disk->disk_name[0] != '\0' &&
 		    strncmp(disk->disk_name, "dm-", 3) == 0) {
-			pr_err("APEX_DBG: %s major=%d first_minor=%d\n",
-				disk->disk_name, disk->major,
-				disk->first_minor);
+			pr_err("APEX_DBG: %s major=%d\n",
+				disk->disk_name, disk->major);
 			dm_count++;
 		}
 	}
 	class_dev_iter_exit(&iter);
 
-	pr_err("APEX_DBG: found %d loop devices, %d dm devices\n",
+	pr_err("APEX_DBG: found %d loop, %d dm devices\n",
 		loop_count, dm_count);
 
-	/* Check if apexd is still running */
-	{
-		struct task_struct *t;
-		rcu_read_lock();
-		for_each_process(t) {
-			if (strncmp(t->comm, "apexd", 5) == 0) {
-				pr_err("APEX_DBG: apexd pid=%d state=%ld\n",
-					t->pid, t->state);
+	/* Check apexd process state and stack */
+	rcu_read_lock();
+	for_each_process(t) {
+		if (strncmp(t->comm, "apexd", 5) == 0) {
+			struct stack_trace trace;
+			unsigned long entries[32];
+			int i;
+			struct files_struct *files;
+			struct fdtable *fdt;
+			struct file *file;
+
+			pr_err("APEX_DBG: apexd pid=%d state=%ld on_cpu=%d\n",
+				t->pid, t->state, task_curr(t));
+
+			/* Dump wchan */
+			if (t->wchan) {
+				pr_err("APEX_DBG: apexd wchan=%pS\n",
+					(void *)t->wchan);
+			}
+
+			/* Dump stack trace */
+			trace.nr_entries = 0;
+			trace.entries = entries;
+			trace.max_entries = 32;
+			trace.skip = 0;
+			save_stack_trace_tsk(t, &trace);
+
+			pr_err("APEX_DBG: apexd stack (%d frames):\n",
+				trace.nr_entries);
+			for (i = 0; i < trace.nr_entries; i++) {
+				pr_err("APEX_DBG:  [%d] %pS\n",
+					i, (void *)entries[i]);
+			}
+
+			/* Dump open file descriptors */
+			files = get_files_struct(t);
+			if (files) {
+				spin_lock(&files->file_lock);
+				fdt = files_fdtable(files);
+				for (i = 0; i < fdt->max_fds; i++) {
+					file = fdt->fd[i];
+					if (file) {
+						char buf[128];
+						char *path;
+
+						path = d_path(&file->f_path, buf, sizeof(buf));
+						if (!IS_ERR(path)) {
+							pr_err("APEX_DBG: apexd fd[%d]=%s\n",
+								i, path);
+						} else {
+							pr_err("APEX_DBG: apexd fd[%d]=(error)\n", i);
+						}
+					}
+				}
+				spin_unlock(&files->file_lock);
+				put_files_struct(files);
 			}
 		}
-		rcu_read_unlock();
 	}
+	rcu_read_unlock();
 	pr_err("APEX_DBG: === END DUMP ===\n");
 }
 
@@ -77,7 +127,7 @@ static void apex_debug_worker(struct work_struct *work)
 	apex_debug_dump_state();
 
 	count++;
-	if (count < 30) {  /* Run for ~90 seconds */
+	if (count < 30) {
 		schedule_delayed_work(&apex_debug_work, msecs_to_jiffies(3000));
 	}
 }
@@ -98,13 +148,9 @@ static struct notifier_block apex_debug_panic_nb = {
 static int __init apex_debug_init(void)
 {
 	INIT_DELAYED_WORK(&apex_debug_work, apex_debug_worker);
-
-	/* Start at 12 seconds after boot */
 	schedule_delayed_work(&apex_debug_work, msecs_to_jiffies(12000));
-
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &apex_debug_panic_nb);
-
 	pr_err("APEX_DBG: debug tracing initialized\n");
 	return 0;
 }
