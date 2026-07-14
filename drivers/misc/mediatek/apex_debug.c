@@ -30,7 +30,6 @@ extern unsigned long get_wchan(struct task_struct *p);
 static void ipi_dump_current_stack(void *info)
 {
 	struct task_struct *t = current;
-	int cpu = smp_processor_id();
 
 	if (t->pid == 1) {
 		struct pt_regs *task_regs = task_pt_regs(t);
