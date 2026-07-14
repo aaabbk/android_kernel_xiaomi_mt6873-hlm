@@ -8,10 +8,12 @@
 #include <linux/kernel.h>
 #include <linux/workqueue.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/blkdev.h>
 #include <linux/device.h>
 #include <linux/genhd.h>
 #include <linux/kobject.h>
+#include <linux/kernel.h>
 
 extern struct class block_class;
 
@@ -24,19 +26,22 @@ static void apex_debug_dump_state(void)
 
 	pr_err("APEX_DBG: === BLOCK DEVICE DUMP ===\n");
 
-	class_dev_iter_init(&iter, &block_class, NULL, &disk_type);
+	/* Use NULL for device type to iterate all block devices */
+	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
 		disk = dev_to_disk(dev);
-		if (!disk || !disk->disk_name)
+		if (!disk)
 			continue;
 
-		if (strncmp(disk->disk_name, "loop", 4) == 0) {
+		if (disk->disk_name[0] != '\0' &&
+		    strncmp(disk->disk_name, "loop", 4) == 0) {
 			pr_err("APEX_DBG: %s major=%d first_minor=%d\n",
 				disk->disk_name, disk->major,
 				disk->first_minor);
 			loop_count++;
 		}
-		if (strncmp(disk->disk_name, "dm-", 3) == 0) {
+		if (disk->disk_name[0] != '\0' &&
+		    strncmp(disk->disk_name, "dm-", 3) == 0) {
 			pr_err("APEX_DBG: %s major=%d first_minor=%d\n",
 				disk->disk_name, disk->major,
 				disk->first_minor);
