@@ -55,7 +55,7 @@
 #define KREE_INFO(fmt...) pr_info("[KREE]" fmt)
 #define KREE_ERR(fmt...) pr_info("[KREE][ERR]" fmt)
 #else
-#define KREE_DEBUG(fmt...) pr_info("[KREE]" fmt)
+#define KREE_DEBUG(fmt...)
 #define KREE_INFO(fmt...) pr_info("[KREE]" fmt)
 #define KREE_ERR(fmt...) pr_info("[KREE][ERR]" fmt)
 #endif

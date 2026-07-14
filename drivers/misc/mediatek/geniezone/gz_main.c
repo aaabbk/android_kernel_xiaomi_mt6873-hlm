@@ -71,7 +71,7 @@ uint64_t sdsp_elf_pa[2] = { 0, 0 };
 #include "mtee_ut/gz_sec_storage_ut.h"
 #endif
 
-#define KREE_DEBUG(fmt...) pr_info("[KREE]" fmt)
+#define KREE_DEBUG(fmt...) pr_debug("[KREE]" fmt)
 #define KREE_INFO(fmt...) pr_info("[KREE]" fmt)
 #define KREE_ERR(fmt...) pr_info("[KREE][ERR]" fmt)
 
