@@ -194,9 +194,6 @@ static struct notifier_block apex_debug_panic_nb = {
  * We use a kretprobe-like approach by hooking into the syscall path.
  */
 
-/* Counter for init syscalls */
-static atomic_t init_syscall_count = ATOMIC_INIT(0);
-
 /* Trace init's syscalls by hooking into the main event loop.
  * We use a timer to periodically check what syscall init is making. */
 static struct delayed_work init_trace_work;
