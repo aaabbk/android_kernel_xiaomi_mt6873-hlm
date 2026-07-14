@@ -17,9 +17,9 @@
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/syscalls.h>
 
 extern struct class block_class;
+extern unsigned long get_wchan(struct task_struct *p);
 
 static void apex_debug_dump_state(void)
 {
@@ -70,9 +70,14 @@ static void apex_debug_dump_state(void)
 				t->pid, t->state, task_curr(t));
 
 			/* Dump wchan */
-			if (t->wchan) {
-				pr_err("APEX_DBG: apexd wchan=%pS\n",
-					(void *)t->wchan);
+			{
+				unsigned long wchan = get_wchan(t);
+				if (wchan) {
+					pr_err("APEX_DBG: apexd wchan=%pS\n",
+						(void *)wchan);
+				} else {
+					pr_err("APEX_DBG: apexd wchan=(running/none)\n");
+				}
 			}
 
 			/* Dump stack trace */
