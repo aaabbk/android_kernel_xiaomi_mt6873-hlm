@@ -5847,6 +5847,45 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 		break;
 	}
+	case BINDER_ENABLE_ONESHOT_SPN: {
+		__u32 enable;
+
+		if (copy_from_user(&enable, ubuf, sizeof(enable))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		/* Stub: accept but no-op. This ioctl enables one-shot
+		 * synchronous pending notification in newer kernels.
+		 * Returning success prevents userspace breakage. */
+		break;
+	}
+	case BINDER_FREEZE: {
+		struct binder_freeze_info info;
+
+		if (copy_from_user(&info, ubuf, sizeof(info))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		/* Stub: accept but no-op. Process freezing is an
+		 * optimization for cached app processes. */
+		break;
+	}
+	case BINDER_GET_FROZEN_INFO: {
+		struct binder_frozen_status_info info;
+
+		if (copy_from_user(&info, ubuf, sizeof(info))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		/* Stub: report as not frozen (sync_recv=0, async_recv=0) */
+		info.sync_recv = 0;
+		info.async_recv = 0;
+		if (copy_to_user(ubuf, &info, sizeof(info))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		break;
+	}
 	default:
 		ret = -EINVAL;
 		goto err;
