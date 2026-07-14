@@ -55,29 +55,33 @@ static void apex_debug_dump_state(void)
 	pr_err("APEX_DBG: found %d loop, %d dm devices\n",
 		loop_count, dm_count);
 
-	/* Check apexd process state and stack */
+	/* Check apexd and init process state and stack */
 	rcu_read_lock();
 	for_each_process(t) {
-		if (strncmp(t->comm, "apexd", 5) == 0) {
+		if (strncmp(t->comm, "apexd", 5) == 0 ||
+		    strncmp(t->comm, "init", 4) == 0 ||
+		    strncmp(t->comm, "servicemanager", 14) == 0 ||
+		    strncmp(t->comm, "vold", 4) == 0 ||
+		    strncmp(t->comm, "ueventd", 7) == 0) {
 			struct stack_trace trace;
 			unsigned long entries[32];
 			int i;
 			struct files_struct *files;
 			struct fdtable *fdt;
 			struct file *file;
+			unsigned long wchan;
 
-			pr_err("APEX_DBG: apexd pid=%d state=%ld on_cpu=%d\n",
-				t->pid, t->state, task_curr(t));
+			pr_err("APEX_DBG: %s pid=%d state=%ld on_cpu=%d\n",
+				t->comm, t->pid, t->state, task_curr(t));
 
 			/* Dump wchan */
-			{
-				unsigned long wchan = get_wchan(t);
-				if (wchan) {
-					pr_err("APEX_DBG: apexd wchan=%pS\n",
-						(void *)wchan);
-				} else {
-					pr_err("APEX_DBG: apexd wchan=(running/none)\n");
-				}
+			wchan = get_wchan(t);
+			if (wchan) {
+				pr_err("APEX_DBG: %s wchan=%pS\n",
+					t->comm, (void *)wchan);
+			} else {
+				pr_err("APEX_DBG: %s wchan=(running/none)\n",
+					t->comm);
 			}
 
 			/* Dump stack trace */
@@ -87,8 +91,8 @@ static void apex_debug_dump_state(void)
 			trace.skip = 0;
 			save_stack_trace_tsk(t, &trace);
 
-			pr_err("APEX_DBG: apexd stack (%d frames):\n",
-				trace.nr_entries);
+			pr_err("APEX_DBG: %s stack (%d frames):\n",
+				t->comm, trace.nr_entries);
 			for (i = 0; i < trace.nr_entries; i++) {
 				pr_err("APEX_DBG:  [%d] %pS\n",
 					i, (void *)entries[i]);
@@ -97,9 +101,10 @@ static void apex_debug_dump_state(void)
 			/* Dump open file descriptors */
 			files = get_files_struct(t);
 			if (files) {
+				int fd_count = 0;
 				spin_lock(&files->file_lock);
 				fdt = files_fdtable(files);
-				for (i = 0; i < fdt->max_fds; i++) {
+				for (i = 0; i < fdt->max_fds && fd_count < 20; i++) {
 					file = fdt->fd[i];
 					if (file) {
 						char buf[128];
@@ -107,11 +112,13 @@ static void apex_debug_dump_state(void)
 
 						path = d_path(&file->f_path, buf, sizeof(buf));
 						if (!IS_ERR(path)) {
-							pr_err("APEX_DBG: apexd fd[%d]=%s\n",
-								i, path);
+							pr_err("APEX_DBG: %s fd[%d]=%s\n",
+								t->comm, i, path);
 						} else {
-							pr_err("APEX_DBG: apexd fd[%d]=(error)\n", i);
+							pr_err("APEX_DBG: %s fd[%d]=(error)\n",
+								t->comm, i);
 						}
+						fd_count++;
 					}
 				}
 				spin_unlock(&files->file_lock);
