@@ -705,10 +705,10 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 	{
 		if (strncmp(current->comm, "apexd", 5) == 0) {
 			if (error < 0) {
-				pr_info("APEXD_IOCTL_FAIL: cmd=0x%x fd=%d ret=%d comm=%s\n",
+				pr_err("APEXD_IOCTL_FAIL: cmd=0x%x fd=%d ret=%d comm=%s\n",
 					cmd, fd, error, current->comm);
 			} else {
-				pr_info("APEXD_IOCTL: cmd=0x%x fd=%d ret=%d comm=%s\n",
+				pr_err("APEXD_IOCTL: cmd=0x%x fd=%d ret=%d comm=%s\n",
 					cmd, fd, error, current->comm);
 			}
 		}

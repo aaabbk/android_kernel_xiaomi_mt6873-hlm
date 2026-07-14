@@ -995,7 +995,7 @@ int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	sector_t hash_position;
 	char dummy;
 
-	pr_info("DM_VERITY: verity_ctr argc=%u argv[0]=%s\n", argc, argc > 0 ? argv[0] : "(null)");
+	pr_err("DM_VERITY: verity_ctr argc=%u argv[0]=%s\n", argc, argc > 0 ? argv[0] : "(null)");
 
 	v = kzalloc(sizeof(struct dm_verity), GFP_KERNEL);
 	if (!v) {

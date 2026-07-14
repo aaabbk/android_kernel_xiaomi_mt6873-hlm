@@ -2860,7 +2860,7 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 		if (copied > 0) {
 			dir_buf[copied] = 0;
 			if (strstr(dir_buf, "/apex/") || strstr(dir_buf, "/dm-"))
-				pr_info("MOUNT: dev=%s dir=%s type=%s flags=0x%lx\n",
+				pr_err("MOUNT: dev=%s dir=%s type=%s flags=0x%lx\n",
 					dev_name, dir_buf, type_page, flags);
 		}
 	}
