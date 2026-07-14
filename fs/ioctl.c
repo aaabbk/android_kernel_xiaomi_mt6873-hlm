@@ -689,7 +689,7 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
 	return error;
 }
 
-SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
+SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long arg)
 {
 	int error;
 	struct fd f = fdget(fd);
@@ -700,5 +700,19 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 	if (!error)
 		error = do_vfs_ioctl(f.file, fd, cmd, arg);
 	fdput(f);
+
+	/* Trace apexd ioctls for debugging */
+	{
+		if (strncmp(current->comm, "apexd", 5) == 0) {
+			if (error < 0) {
+				pr_info("APEXD_IOCTL_FAIL: cmd=0x%x fd=%d ret=%d comm=%s\n",
+					cmd, fd, error, current->comm);
+			} else {
+				pr_info("APEXD_IOCTL: cmd=0x%x fd=%d ret=%d comm=%s\n",
+					cmd, fd, error, current->comm);
+			}
+		}
+	}
+
 	return error;
 }
