@@ -1125,7 +1125,7 @@ static unsigned int devkmsg_poll(struct file *file, poll_table *wait)
 	 * feedback loop: init writes to /dev/kmsg -> new message ->
 	 * POLLIN -> init processes -> init writes again -> loop */
 	if ((file->f_flags & O_ACCMODE) == O_WRONLY)
-		return POLLOUT | POLLNORM;
+		return POLLOUT;
 
 	if (!user)
 		return POLLERR|POLLNVAL;
