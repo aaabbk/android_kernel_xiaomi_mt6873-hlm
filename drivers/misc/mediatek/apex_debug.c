@@ -49,11 +49,11 @@ static void ipi_dump_current_stack(void *info)
 			regs->pc, regs->regs[30], sp);
 
 		/* Read pollfd from user-space stack.
-		 * Use _inatomic variant since we're in IPI context. */
+		 * Use __copy_from_user_inatomic since we're in IPI context. */
 		for (i = 0; i < 5; i++) {
 			unsigned long addr = sp + offsets[i];
 
-			if (!copy_from_user_inatomic(&pfd,
+			if (!__copy_from_user_inatomic(&pfd,
 					(void __user *)addr,
 					sizeof(pfd))) {
 				if (pfd.fd >= 0 && pfd.fd < 64) {
