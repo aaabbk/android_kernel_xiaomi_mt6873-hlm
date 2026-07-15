@@ -1,13 +1,11 @@
 /*
- * apex_debug.c - Fix apexd boot hang by clearing /dev/kmsg POLLERR
+ * apex_debug.c - Safety net for apexd boot hang
  *
- * Root cause: init opens /dev/kmsg for KernelLogger. When kernel log
- * buffer overflows, devkmsg_poll returns POLLERR because user->seq <
- * log_first_seq. Since init can't clear it, poll() always returns
- * immediately → init busy-loops → apexd hangs on futex_wait.
+ * Primary fix: devkmsg_poll() in printk.c now returns POLLOUT only
+ * for O_WRONLY opens, preventing init from busy-looping on POLLIN.
  *
- * Fix: open our own /dev/kmsg, read to get current seq, then copy
- * that seq to init's devkmsg_user to clear POLLERR.
+ * This module: sets init's /dev/kmsg user->seq to U64_MAX as a
+ * safety net to clear any lingering POLLIN/POLLERR state.
  */
 
 #include <linux/module.h>
@@ -27,51 +25,6 @@
 extern unsigned long get_wchan(struct task_struct *p);
 
 /* devkmsg_user struct: first field is u64 seq (from printk.c) */
-
-/* Get current log_next_seq by opening our own /dev/kmsg and reading.
- * After a successful read, the fd's user->seq == log_next_seq. */
-static u64 apex_get_current_seq(void)
-{
-	struct file *file;
-	mm_segment_t old_fs;
-	char *buf;
-	ssize_t ret;
-	loff_t pos = 0;
-	u64 seq = 0;
-
-	buf = kmalloc(8192, GFP_KERNEL);
-	if (!buf)
-		return 0;
-
-	file = filp_open("/dev/kmsg", O_RDONLY | O_NONBLOCK, 0);
-	if (IS_ERR(file)) {
-		pr_err("APEX_FIX: can't open /dev/kmsg: %ld\n", PTR_ERR(file));
-		kfree(buf);
-		return 0;
-	}
-
-	/* Read one message to advance seq to current position */
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	ret = vfs_read(file, (void __user *)buf, 8191, &pos);
-	set_fs(old_fs);
-	kfree(buf);
-
-	if (ret >= 0 && file->private_data) {
-		/* After read, user->seq has been advanced to log_next_seq */
-		seq = *(u64 *)file->private_data;
-		pr_err("APEX_FIX: got seq=%llu (read ret=%zd)\n", seq, ret);
-	} else if (ret == -EPIPE && file->private_data) {
-		/* EPIPE means messages were lost, but seq was still advanced */
-		seq = *(u64 *)file->private_data;
-		pr_err("APEX_FIX: got seq=%llu after EPIPE\n", seq);
-	} else {
-		pr_err("APEX_FIX: read failed ret=%zd\n", ret);
-	}
-
-	filp_close(file, NULL);
-	return seq;
-}
 
 static void apex_fix_kmsg_pollerr(void)
 {
@@ -133,28 +86,18 @@ static void apex_fix_kmsg_pollerr(void)
 			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
 	}
 
-	/* Get current log seq */
-	{
-		u64 current_seq = apex_get_current_seq();
-		if (current_seq > 0 && kmsg_file->private_data) {
-			u64 *user_seq = (u64 *)kmsg_file->private_data;
-			u64 old_seq = *user_seq;
+	/* Set user->seq to U64_MAX to clear both POLLIN and POLLERR.
+	 * With U64_MAX, user->seq > log_next_seq so devkmsg_poll returns
+	 * no read events. This is a safety net; the primary fix is in
+	 * devkmsg_poll() which skips read events for O_WRONLY opens. */
+	if (kmsg_file->private_data) {
+		u64 *user_seq = (u64 *)kmsg_file->private_data;
+		u64 old_seq = *user_seq;
 
-			*user_seq = current_seq;
+		*user_seq = U64_MAX;
 
-			pr_err("APEX_FIX: advanced user->seq from %llu to %llu\n",
-				old_seq, current_seq);
-		} else if (kmsg_file->private_data) {
-			/* Fallback: set to very large value to ensure
-			 * user->seq >= log_next_seq */
-			u64 *user_seq = (u64 *)kmsg_file->private_data;
-			u64 old_seq = *user_seq;
-
-			*user_seq = U64_MAX;
-
-			pr_err("APEX_FIX: set user->seq from %llu to U64_MAX (fallback)\n",
-				old_seq);
-		}
+		pr_err("APEX_FIX: set user->seq from %llu to U64_MAX\n",
+			old_seq);
 	}
 
 	/* Check poll after fix */
