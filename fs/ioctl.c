@@ -701,18 +701,5 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 		error = do_vfs_ioctl(f.file, fd, cmd, arg);
 	fdput(f);
 
-	/* Trace apexd ioctls for debugging */
-	{
-		if (strncmp(current->comm, "apexd", 5) == 0) {
-			if (error < 0) {
-				pr_err("APEXD_IOCTL_FAIL: cmd=0x%x fd=%d ret=%d comm=%s\n",
-					cmd, fd, error, current->comm);
-			} else {
-				pr_err("APEXD_IOCTL: cmd=0x%x fd=%d ret=%d comm=%s\n",
-					cmd, fd, error, current->comm);
-			}
-		}
-	}
-
 	return error;
 }

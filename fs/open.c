@@ -1100,12 +1100,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 		}
 	}
 
-	/* Trace apexd file opens for debugging */
-	if (strncmp(current->comm, "apexd", 5) == 0 && tmp->name) {
-		pr_err("APEXD_OPEN: '%s' flags=0x%x fd=%d\n",
-			tmp->name, flags, fd);
-	}
-
 	putname(tmp);
 	return fd;
 }
