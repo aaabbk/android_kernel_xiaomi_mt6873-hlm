@@ -27,10 +27,16 @@ static void apex_clear_kmsg_pollerr(void)
 	struct fdtable *fdt;
 	struct file *kmsg_file = NULL;
 	mm_segment_t old_fs;
-	char buf[8192];
+	char *buf;
 	ssize_t ret;
 	int i;
 	unsigned int orig_flags;
+
+	buf = kmalloc(8192, GFP_KERNEL);
+	if (!buf) {
+		pr_err("APEX_FIX: kmalloc failed\n");
+		return;
+	}
 
 	rcu_read_lock();
 	init_task = find_task_by_vpid(1);
@@ -39,14 +45,14 @@ static void apex_clear_kmsg_pollerr(void)
 	rcu_read_unlock();
 
 	if (!init_task)
-		return;
+		goto out_free;
 
 	pr_err("APEX_FIX: init state=%ld\n", init_task->state);
 
 	files = get_files_struct(init_task);
 	if (!files) {
 		put_task_struct(init_task);
-		return;
+		goto out_free;
 	}
 
 	spin_lock(&files->file_lock);
@@ -71,7 +77,7 @@ static void apex_clear_kmsg_pollerr(void)
 
 	if (!kmsg_file) {
 		pr_err("APEX_FIX: /dev/kmsg not found\n");
-		return;
+		goto out_free;
 	}
 
 	/* Check poll before read */
@@ -130,6 +136,9 @@ static void apex_clear_kmsg_pollerr(void)
 	}
 
 	fput(kmsg_file);
+
+out_free:
+	kfree(buf);
 }
 
 static void apex_check_init_state(void)
