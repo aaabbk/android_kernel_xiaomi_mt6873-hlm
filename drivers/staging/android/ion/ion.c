@@ -675,27 +675,11 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 	start = sched_clock();
 
 	down_read(&dev->lock);
-	/* [ION_DEBUG] dump all registered heaps before allocation */
-	pr_err("[ION_DEBUG] ion_alloc: len=%zu, align=%zu, heap_mask=0x%x, flags=0x%x, pid=%d, comm=%s\n",
-	       len, align, heap_id_mask, flags, current->pid, current->comm);
-	{
-		struct ion_heap *__h;
-		plist_for_each_entry(__h, &dev->heaps, node) {
-			pr_err("[ION_DEBUG]  heap: id=%d, name=%s, type=%d, mask_bit=0x%x, matched=%d, total_alloc=%zu\n",
-			       __h->id, __h->name ? __h->name : "null", __h->type,
-			       (1 << __h->id), ((1 << __h->id) & heap_id_mask) ? 1 : 0,
-			       atomic_long_read(&__h->total_allocated));
-		}
-	}
 	plist_for_each_entry(heap, &dev->heaps, node) {
 		/* if the caller didn't specify this heap id */
 		if (!((1 << heap->id) & heap_id_mask))
 			continue;
 		buffer = ion_buffer_create(heap, dev, len, align, flags);
-		/* [ION_DEBUG] log each heap attempt */
-		pr_err("[ION_DEBUG] trying heap id=%d (%s): buffer=%p, err=%ld\n",
-		       heap->id, heap->name ? heap->name : "null", buffer,
-		       IS_ERR(buffer) ? PTR_ERR(buffer) : 0);
 		if (!IS_ERR(buffer))
 			break;
 	}
@@ -703,8 +687,6 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 
 	if (!buffer) {
 		IONMSG("%s buffer is null.\n", __func__);
-		pr_err("[ION_DEBUG] FAILED: len=%zu, heap_mask=0x%x, pid=%d(%s) - no heap could allocate\n",
-		       len, heap_id_mask, current->pid, current->comm);
 		return ERR_PTR(-ENODEV);
 	}
 
