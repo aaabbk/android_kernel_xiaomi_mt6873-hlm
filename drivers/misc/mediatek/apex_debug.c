@@ -1,7 +1,7 @@
 /*
  * apex_debug.c - Debug tracing for apexd boot issues
  *
- * Traces init's poll() by reading pollfd from user-space stack via IPI.
+ * Dumps raw stack bytes around pollfd to find exact poll arguments.
  */
 
 #include <linux/module.h>
@@ -23,8 +23,7 @@
 extern struct class block_class;
 extern unsigned long get_wchan(struct task_struct *p);
 
-/* IPI handler: dump init's user-space PC and read pollfd from stack.
- * Runs in interrupt context on init's CPU, with current=init. */
+/* IPI handler: dump init's user-space PC and raw stack around pollfd */
 static void ipi_dump_current_stack(void *info)
 {
 	struct task_struct *t = current;
@@ -39,28 +38,48 @@ static void ipi_dump_current_stack(void *info)
 
 	if (user_mode(regs)) {
 		unsigned long sp = regs->sp;
-		struct pollfd pfd;
+		/* Dump 32 raw bytes at sp+0x1d0 to sp+0x1f0
+		 * pollfd should be at sp+0x1d8 (from disassembly):
+		 *   sp+0x1d8: fd (4 bytes)
+		 *   sp+0x1dc: events (2 bytes)
+		 *   sp+0x1de: revents (2 bytes)
+		 */
+		unsigned char raw[32];
+		unsigned long base = sp + 0x1d0;
 		int i;
-		/* pollfd offsets from disassembly: sp+0x1d8 is primary.
-		 * Also check nearby offsets in case stack layout varies. */
-		int offsets[] = {0x1d8, 0x1e0, 0x1d0, 0x1c8, 0x1e8};
 
-		pr_err("APEX_CPU: init PC=0x%llx LR=0x%llx SP=0x%llx\n",
-			regs->pc, regs->regs[30], sp);
+		pr_err("APEX_CPU: init PC=0x%llx SP=0x%llx\n",
+			regs->pc, sp);
 
-		/* Read pollfd from user-space stack.
-		 * Use __copy_from_user_inatomic since we're in IPI context. */
-		for (i = 0; i < 5; i++) {
-			unsigned long addr = sp + offsets[i];
+		if (!__copy_from_user_inatomic(raw,
+				(void __user *)base, sizeof(raw))) {
+			/* Print as hex dump */
+			pr_err("APEX_CPU: raw bytes at sp+0x1d0:\n");
+			for (i = 0; i < 32; i += 8) {
+				pr_err("APEX_CPU:  sp+0x%03x: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+					0x1d0 + i,
+					raw[i], raw[i+1], raw[i+2], raw[i+3],
+					raw[i+4], raw[i+5], raw[i+6], raw[i+7]);
+			}
 
-			if (!__copy_from_user_inatomic(&pfd,
-					(void __user *)addr,
-					sizeof(pfd))) {
-				if (pfd.fd >= 0 && pfd.fd < 64) {
-					pr_err("APEX_CPU: pollfd sp+0x%x: fd=%d events=0x%x revents=0x%x\n",
-						offsets[i], pfd.fd,
-						pfd.events, pfd.revents);
-				}
+			/* Interpret pollfd at sp+0x1d8 */
+			{
+				int fd = *(int *)(raw + 8);      /* sp+0x1d8 */
+				short events = *(short *)(raw + 12); /* sp+0x1dc */
+				short revents = *(short *)(raw + 14); /* sp+0x1de */
+
+				pr_err("APEX_CPU: pollfd@sp+0x1d8: fd=%d events=0x%x revents=0x%x\n",
+					fd, (unsigned)events, (unsigned)revents);
+			}
+
+			/* Also interpret as pollfd at sp+0x1e0 */
+			{
+				int fd = *(int *)(raw + 16);     /* sp+0x1e0 */
+				short events = *(short *)(raw + 20); /* sp+0x1e4 */
+				short revents = *(short *)(raw + 22); /* sp+0x1e6 */
+
+				pr_err("APEX_CPU: pollfd@sp+0x1e0: fd=%d events=0x%x revents=0x%x\n",
+					fd, (unsigned)events, (unsigned)revents);
 			}
 		}
 	} else {
@@ -167,7 +186,7 @@ static void apex_debug_worker(struct work_struct *work)
 	apex_debug_dump_state();
 
 	count++;
-	if (count < 30)
+	if (count < 20)
 		schedule_delayed_work(&apex_debug_work, msecs_to_jiffies(3000));
 }
 
@@ -217,7 +236,7 @@ static void init_trace_worker(struct work_struct *work)
 
 resched:
 	trace_count++;
-	if (trace_count < 60)
+	if (trace_count < 40)
 		schedule_delayed_work(&init_trace_work, msecs_to_jiffies(500));
 }
 
