@@ -15,6 +15,7 @@
 #include <linux/poll.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <asm/ptrace.h>
 
 extern unsigned long get_wchan(struct task_struct *p);
