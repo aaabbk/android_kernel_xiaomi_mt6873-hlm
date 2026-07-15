@@ -22,7 +22,6 @@
 #include <linux/uaccess.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/syscalls.h>
 #include <asm/ptrace.h>
 
 extern unsigned long get_wchan(struct task_struct *p);
@@ -35,22 +34,28 @@ static u64 apex_get_current_seq(void)
 {
 	struct file *file;
 	mm_segment_t old_fs;
-	char buf[8192];
+	char *buf;
 	ssize_t ret;
 	loff_t pos = 0;
 	u64 seq = 0;
 
+	buf = kmalloc(8192, GFP_KERNEL);
+	if (!buf)
+		return 0;
+
 	file = filp_open("/dev/kmsg", O_RDONLY | O_NONBLOCK, 0);
 	if (IS_ERR(file)) {
 		pr_err("APEX_FIX: can't open /dev/kmsg: %ld\n", PTR_ERR(file));
+		kfree(buf);
 		return 0;
 	}
 
 	/* Read one message to advance seq to current position */
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	ret = vfs_read(file, (void __user *)buf, sizeof(buf) - 1, &pos);
+	ret = vfs_read(file, (void __user *)buf, 8191, &pos);
 	set_fs(old_fs);
+	kfree(buf);
 
 	if (ret >= 0 && file->private_data) {
 		/* After read, user->seq has been advanced to log_next_seq */
