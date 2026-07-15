@@ -1,13 +1,13 @@
 /*
  * apex_debug.c - Fix apexd boot hang by clearing /dev/kmsg POLLERR
  *
- * Root cause: init opens /dev/kmsg as O_WRONLY for KernelLogger.
- * When kernel log buffer overflows, devkmsg_poll returns POLLERR
- * because user->seq < log_first_seq. Since init can't read (O_WRONLY),
- * POLLERR is never cleared, causing poll() to always return immediately
- * → init busy-loops → apexd's property set never gets processed.
+ * Root cause: init opens /dev/kmsg for KernelLogger. When kernel log
+ * buffer overflows, devkmsg_poll returns POLLERR because user->seq <
+ * log_first_seq. Since init can't clear it, poll() always returns
+ * immediately → init busy-loops → apexd hangs on futex_wait.
  *
- * Fix: directly advance user->seq past log_next_seq to clear POLLERR.
+ * Fix: open our own /dev/kmsg, read to get current seq, then copy
+ * that seq to init's devkmsg_user to clear POLLERR.
  */
 
 #include <linux/module.h>
@@ -22,18 +22,51 @@
 #include <linux/uaccess.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/syscalls.h>
 #include <asm/ptrace.h>
 
 extern unsigned long get_wchan(struct task_struct *p);
-extern u64 log_next_seq;  /* from kernel/printk/printk.c */
 
-/* devkmsg_user struct layout (from v4.14 kernel/printk/printk.c):
- *   u64 seq;          offset 0
- *   u32 idx;          offset 8
- *   struct mutex lock; offset 12 (or 16 with alignment)
- *   char buf[];       after mutex
- * We only need to modify seq (first 8 bytes).
- */
+/* devkmsg_user struct: first field is u64 seq (from printk.c) */
+
+/* Get current log_next_seq by opening our own /dev/kmsg and reading.
+ * After a successful read, the fd's user->seq == log_next_seq. */
+static u64 apex_get_current_seq(void)
+{
+	struct file *file;
+	mm_segment_t old_fs;
+	char buf[8192];
+	ssize_t ret;
+	loff_t pos = 0;
+	u64 seq = 0;
+
+	file = filp_open("/dev/kmsg", O_RDONLY | O_NONBLOCK, 0);
+	if (IS_ERR(file)) {
+		pr_err("APEX_FIX: can't open /dev/kmsg: %ld\n", PTR_ERR(file));
+		return 0;
+	}
+
+	/* Read one message to advance seq to current position */
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	ret = vfs_read(file, (void __user *)buf, sizeof(buf) - 1, &pos);
+	set_fs(old_fs);
+
+	if (ret >= 0 && file->private_data) {
+		/* After read, user->seq has been advanced to log_next_seq */
+		seq = *(u64 *)file->private_data;
+		pr_err("APEX_FIX: got seq=%llu (read ret=%zd)\n", seq, ret);
+	} else if (ret == -EPIPE && file->private_data) {
+		/* EPIPE means messages were lost, but seq was still advanced */
+		seq = *(u64 *)file->private_data;
+		pr_err("APEX_FIX: got seq=%llu after EPIPE\n", seq);
+	} else {
+		pr_err("APEX_FIX: read failed ret=%zd\n", ret);
+	}
+
+	filp_close(file, NULL);
+	return seq;
+}
 
 static void apex_fix_kmsg_pollerr(void)
 {
@@ -88,36 +121,43 @@ static void apex_fix_kmsg_pollerr(void)
 	/* Check poll before fix */
 	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
 		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll before: 0x%x%s%s%s%s\n",
+		pr_err("APEX_FIX: poll before: 0x%x%s%s%s\n",
 			mask,
 			(mask & POLLIN) ? " POLLIN" : "",
-			(mask & POLLPRI) ? " POLLPRI" : "",
 			(mask & POLLERR) ? " POLLERR" : "",
 			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
 	}
 
-	/* Directly modify devkmsg_user->seq to clear POLLERR.
-	 * Setting seq to log_next_seq makes user->seq == log_next_seq,
-	 * so the condition (user->seq < log_next_seq) becomes false,
-	 * and devkmsg_poll returns 0 (no events). */
-	if (kmsg_file->private_data) {
-		u64 *user_seq = (u64 *)kmsg_file->private_data;
-		u64 old_seq = *user_seq;
+	/* Get current log seq */
+	{
+		u64 current_seq = apex_get_current_seq();
+		if (current_seq > 0 && kmsg_file->private_data) {
+			u64 *user_seq = (u64 *)kmsg_file->private_data;
+			u64 old_seq = *user_seq;
 
-		/* Advance seq to current log_next_seq */
-		*user_seq = log_next_seq;
+			*user_seq = current_seq;
 
-		pr_err("APEX_FIX: advanced user->seq from %llu to %llu (log_next_seq)\n",
-			old_seq, log_next_seq);
+			pr_err("APEX_FIX: advanced user->seq from %llu to %llu\n",
+				old_seq, current_seq);
+		} else if (kmsg_file->private_data) {
+			/* Fallback: set to very large value to ensure
+			 * user->seq >= log_next_seq */
+			u64 *user_seq = (u64 *)kmsg_file->private_data;
+			u64 old_seq = *user_seq;
+
+			*user_seq = U64_MAX;
+
+			pr_err("APEX_FIX: set user->seq from %llu to U64_MAX (fallback)\n",
+				old_seq);
+		}
 	}
 
 	/* Check poll after fix */
 	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
 		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll after: 0x%x%s%s%s%s\n",
+		pr_err("APEX_FIX: poll after: 0x%x%s%s%s\n",
 			mask,
 			(mask & POLLIN) ? " POLLIN" : "",
-			(mask & POLLPRI) ? " POLLPRI" : "",
 			(mask & POLLERR) ? " POLLERR" : "",
 			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
 	}
