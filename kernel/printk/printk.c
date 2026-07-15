@@ -1119,15 +1119,23 @@ static unsigned int devkmsg_poll(struct file *file, poll_table *wait)
 	struct devkmsg_user *user = file->private_data;
 	int ret = 0;
 
+	/* write-only opens (e.g. init's KernelLogger) should not receive
+	 * read events. Without this, poll() on O_WRONLY /dev/kmsg returns
+	 * immediately whenever new kernel messages exist, causing a
+	 * feedback loop: init writes to /dev/kmsg -> new message ->
+	 * POLLIN -> init processes -> init writes again -> loop */
+	if ((file->f_flags & O_ACCMODE) == O_WRONLY)
+		return POLLOUT | POLLNORM;
+
 	if (!user)
 		return POLLERR|POLLNVAL;
 
 	poll_wait(file, &log_wait, wait);
 
 	logbuf_lock_irq();
-	/* return error when data has vanished underneath us */
-	if (user->seq < log_first_seq) {
-		if (user->seq < log_next_seq)
+	if (user->seq < log_next_seq) {
+		/* return error when data has vanished underneath us */
+		if (user->seq < log_first_seq)
 			ret = POLLIN|POLLRDNORM|POLLERR|POLLPRI;
 		else
 			ret = POLLIN|POLLRDNORM;

@@ -1,11 +1,9 @@
 /*
- * apex_debug.c - Safety net for apexd boot hang
+ * apex_debug.c - Debug init busy-loop by dumping all fd poll states
  *
- * Primary fix: devkmsg_poll() in printk.c now returns POLLOUT only
- * for O_WRONLY opens, preventing init from busy-looping on POLLIN.
- *
- * This module: sets init's /dev/kmsg user->seq to U64_MAX as a
- * safety net to clear any lingering POLLIN/POLLERR state.
+ * This module dumps all of init's file descriptors with their paths
+ * and poll() results to identify which fd is causing init to busy-loop.
+ * It also fixes /dev/kmsg POLLERR as a safety net.
  */
 
 #include <linux/module.h>
@@ -24,14 +22,11 @@
 
 extern unsigned long get_wchan(struct task_struct *p);
 
-/* devkmsg_user struct: first field is u64 seq (from printk.c) */
-
-static void apex_fix_kmsg_pollerr(void)
+static void apex_dump_all_fds(void)
 {
 	struct task_struct *init_task;
 	struct files_struct *files;
 	struct fdtable *fdt;
-	struct file *kmsg_file = NULL;
 	int i;
 
 	rcu_read_lock();
@@ -57,60 +52,44 @@ static void apex_fix_kmsg_pollerr(void)
 	for (i = 0; i < fdt->max_fds; i++) {
 		struct file *file = fdt->fd[i];
 		if (file) {
-			char path_buf[128];
+			char path_buf[256];
 			char *path;
+			unsigned int mask = 0;
 
 			path = d_path(&file->f_path, path_buf, sizeof(path_buf));
-			if (!IS_ERR(path) && strcmp(path, "/dev/kmsg") == 0) {
-				kmsg_file = get_file(file);
-				break;
+
+			/* Get poll state */
+			if (file->f_op && file->f_op->poll) {
+				/* poll may need file_lock released */
+				mask = file->f_op->poll(file, NULL);
 			}
+
+			pr_err("APEX_FIX: fd[%d] %s flags=0x%x poll=0x%x%s%s%s%s%s\n",
+				i,
+				IS_ERR(path) ? "???" : path,
+				file->f_flags,
+				mask,
+				(mask & POLLIN) ? " POLLIN" : "",
+				(mask & POLLOUT) ? " POLLOUT" : "",
+				(mask & POLLERR) ? " POLLERR" : "",
+				(mask & POLLRDNORM) ? " POLLRDNORM" : "",
+				(mask & POLLNVAL) ? " POLLNVAL" : "");
 		}
 	}
+
 	spin_unlock(&files->file_lock);
 	put_files_struct(files);
+
+	/* Also dump user-space PC to see where init is executing */
+	{
+		struct pt_regs *regs = task_pt_regs(init_task);
+		if (regs) {
+			pr_err("APEX_FIX: init PC=0x%llx LR=0x%llx SP=0x%llx\n",
+				regs->pc, regs->regs[30], regs->sp);
+		}
+	}
+
 	put_task_struct(init_task);
-
-	if (!kmsg_file) {
-		pr_err("APEX_FIX: /dev/kmsg not found\n");
-		return;
-	}
-
-	/* Check poll before fix */
-	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
-		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll before: 0x%x%s%s%s\n",
-			mask,
-			(mask & POLLIN) ? " POLLIN" : "",
-			(mask & POLLERR) ? " POLLERR" : "",
-			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
-	}
-
-	/* Set user->seq to U64_MAX to clear both POLLIN and POLLERR.
-	 * With U64_MAX, user->seq > log_next_seq so devkmsg_poll returns
-	 * no read events. This is a safety net; the primary fix is in
-	 * devkmsg_poll() which skips read events for O_WRONLY opens. */
-	if (kmsg_file->private_data) {
-		u64 *user_seq = (u64 *)kmsg_file->private_data;
-		u64 old_seq = *user_seq;
-
-		*user_seq = U64_MAX;
-
-		pr_err("APEX_FIX: set user->seq from %llu to U64_MAX\n",
-			old_seq);
-	}
-
-	/* Check poll after fix */
-	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
-		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll after: 0x%x%s%s%s\n",
-			mask,
-			(mask & POLLIN) ? " POLLIN" : "",
-			(mask & POLLERR) ? " POLLERR" : "",
-			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
-	}
-
-	fput(kmsg_file);
 }
 
 static void apex_check_init_state(void)
@@ -141,8 +120,8 @@ static void apex_debug_worker(struct work_struct *work)
 {
 	static int count = 0;
 
-	pr_err("APEX_FIX: === FIX %d ===\n", count);
-	apex_fix_kmsg_pollerr();
+	pr_err("APEX_FIX: === DUMP %d ===\n", count);
+	apex_dump_all_fds();
 
 	schedule_delayed_work(&apex_check_work, msecs_to_jiffies(500));
 
