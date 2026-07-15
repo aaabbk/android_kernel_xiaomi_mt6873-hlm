@@ -1,7 +1,13 @@
 /*
- * apex_debug.c - Debug tracing for apexd boot issues
+ * apex_debug.c - Fix apexd boot hang by clearing /dev/kmsg POLLERR
  *
- * Reads from init's /dev/kmsg fd to clear persistent POLLERR.
+ * Root cause: init opens /dev/kmsg as O_WRONLY for KernelLogger.
+ * When kernel log buffer overflows, devkmsg_poll returns POLLERR
+ * because user->seq < log_first_seq. Since init can't read (O_WRONLY),
+ * POLLERR is never cleared, causing poll() to always return immediately
+ * → init busy-loops → apexd's property set never gets processed.
+ *
+ * Fix: directly advance user->seq past log_next_seq to clear POLLERR.
  */
 
 #include <linux/module.h>
@@ -19,25 +25,23 @@
 #include <asm/ptrace.h>
 
 extern unsigned long get_wchan(struct task_struct *p);
+extern u64 log_next_seq;  /* from kernel/printk/printk.c */
 
-/* Read from init's /dev/kmsg fd to clear POLLERR. */
-static void apex_clear_kmsg_pollerr(void)
+/* devkmsg_user struct layout (from v4.14 kernel/printk/printk.c):
+ *   u64 seq;          offset 0
+ *   u32 idx;          offset 8
+ *   struct mutex lock; offset 12 (or 16 with alignment)
+ *   char buf[];       after mutex
+ * We only need to modify seq (first 8 bytes).
+ */
+
+static void apex_fix_kmsg_pollerr(void)
 {
 	struct task_struct *init_task;
 	struct files_struct *files;
 	struct fdtable *fdt;
 	struct file *kmsg_file = NULL;
-	mm_segment_t old_fs;
-	char *buf;
-	ssize_t ret;
 	int i;
-	unsigned int orig_flags;
-
-	buf = kmalloc(8192, GFP_KERNEL);
-	if (!buf) {
-		pr_err("APEX_FIX: kmalloc failed\n");
-		return;
-	}
 
 	rcu_read_lock();
 	init_task = find_task_by_vpid(1);
@@ -46,14 +50,14 @@ static void apex_clear_kmsg_pollerr(void)
 	rcu_read_unlock();
 
 	if (!init_task)
-		goto out_free;
+		return;
 
 	pr_err("APEX_FIX: init state=%ld\n", init_task->state);
 
 	files = get_files_struct(init_task);
 	if (!files) {
 		put_task_struct(init_task);
-		goto out_free;
+		return;
 	}
 
 	spin_lock(&files->file_lock);
@@ -78,68 +82,47 @@ static void apex_clear_kmsg_pollerr(void)
 
 	if (!kmsg_file) {
 		pr_err("APEX_FIX: /dev/kmsg not found\n");
-		goto out_free;
+		return;
 	}
 
-	/* Check poll before read */
+	/* Check poll before fix */
 	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
 		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll before: 0x%x%s%s%s\n",
+		pr_err("APEX_FIX: poll before: 0x%x%s%s%s%s\n",
 			mask,
 			(mask & POLLIN) ? " POLLIN" : "",
+			(mask & POLLPRI) ? " POLLPRI" : "",
 			(mask & POLLERR) ? " POLLERR" : "",
-			(mask & POLLHUP) ? " POLLHUP" : "");
+			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
 	}
 
-	/* Temporarily set O_NONBLOCK to avoid blocking in devkmsg_read */
-	orig_flags = kmsg_file->f_flags;
-	kmsg_file->f_flags |= O_NONBLOCK;
+	/* Directly modify devkmsg_user->seq to clear POLLERR.
+	 * Setting seq to log_next_seq makes user->seq == log_next_seq,
+	 * so the condition (user->seq < log_next_seq) becomes false,
+	 * and devkmsg_poll returns 0 (no events). */
+	if (kmsg_file->private_data) {
+		u64 *user_seq = (u64 *)kmsg_file->private_data;
+		u64 old_seq = *user_seq;
 
-	/* Read from /dev/kmsg using kernel buffer */
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
+		/* Advance seq to current log_next_seq */
+		*user_seq = log_next_seq;
 
-	for (i = 0; i < 200; i++) {
-		loff_t pos = 0;
-		ret = vfs_read(kmsg_file, (void __user *)buf,
-			       sizeof(buf) - 1, &pos);
-		if (ret == -EPIPE) {
-			if (i == 0)
-				pr_err("APEX_FIX: read -EPIPE (seq advanced)\n");
-			continue;
-		}
-		if (ret == -EAGAIN) {
-			if (i == 0)
-				pr_err("APEX_FIX: read -EAGAIN (empty)\n");
-			break;
-		}
-		if (ret < 0) {
-			pr_err("APEX_FIX: read error %zd\n", ret);
-			break;
-		}
-		if (ret == 0)
-			break;
+		pr_err("APEX_FIX: advanced user->seq from %llu to %llu (log_next_seq)\n",
+			old_seq, log_next_seq);
 	}
 
-	set_fs(old_fs);
-	kmsg_file->f_flags = orig_flags;
-
-	pr_err("APEX_FIX: drained %d messages\n", i);
-
-	/* Check poll after read */
+	/* Check poll after fix */
 	if (kmsg_file->f_op && kmsg_file->f_op->poll) {
 		unsigned int mask = kmsg_file->f_op->poll(kmsg_file, NULL);
-		pr_err("APEX_FIX: poll after: 0x%x%s%s%s\n",
+		pr_err("APEX_FIX: poll after: 0x%x%s%s%s%s\n",
 			mask,
 			(mask & POLLIN) ? " POLLIN" : "",
+			(mask & POLLPRI) ? " POLLPRI" : "",
 			(mask & POLLERR) ? " POLLERR" : "",
-			(mask & POLLHUP) ? " POLLHUP" : "");
+			(mask & POLLRDNORM) ? " POLLRDNORM" : "");
 	}
 
 	fput(kmsg_file);
-
-out_free:
-	kfree(buf);
 }
 
 static void apex_check_init_state(void)
@@ -171,9 +154,8 @@ static void apex_debug_worker(struct work_struct *work)
 	static int count = 0;
 
 	pr_err("APEX_FIX: === FIX %d ===\n", count);
-	apex_clear_kmsg_pollerr();
+	apex_fix_kmsg_pollerr();
 
-	/* Schedule state check 500ms later */
 	schedule_delayed_work(&apex_check_work, msecs_to_jiffies(500));
 
 	count++;
