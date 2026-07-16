@@ -1431,7 +1431,7 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
-	if (!typdatum || typdatum->attribute)
+	if (!typdatum)
 		goto out;
 
 	ctx->type = typdatum->value;

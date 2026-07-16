@@ -147,10 +147,24 @@ void apex_signal_hook(int sig, struct siginfo *info, struct task_struct *p)
 	if (!apex_comm_match(p->comm))
 		return;
 
-	/* Try to get the target's regs. If p == current, use current_regs.
-	 * If p != current, we can only safely read p without locking for
-	 * regs in 4.14 (task_pt_regs is computed from kernel stack top). */
-	regs = task_pt_regs(p);
+	/* Only access pt_regs when p == current. For other tasks, their
+	 * kernel stack may be freed (p->stack == NULL) during do_exit,
+	 * causing task_pt_regs() to return a near-NULL pointer and oops.
+	 * This was the cause of the kernel panic at apex_signal_hook+0x140. */
+	if (p == current) {
+		regs = task_pt_regs(current);
+	} else {
+		/* For remote tasks, skip pt_regs dump — just log the signal */
+		pr_err("APEX_SIG: pid=%d tgid=%d comm=%s <-- SIG=%d(%s) %s "
+			"[remote task, regs skipped]\n",
+			p->pid, p->tgid, p->comm, sig, apex_sig_name(sig),
+			(info == SEND_SIG_PRIV) ? "from-kernel(priv)" :
+			(info == SEND_SIG_FORCED) ? "forced" :
+			(info == SEND_SIG_NOINFO) ? "noinfo" :
+			(!info) ? "null" :
+			(SI_FROMUSER(info)) ? "from-user" : "from-kernel");
+		return;
+	}
 	if (!regs)
 		return;
 
