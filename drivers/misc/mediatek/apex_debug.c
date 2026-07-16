@@ -134,7 +134,6 @@ static int apex_comm_match(const char *comm)
 void apex_signal_hook(int sig, struct siginfo *info, struct task_struct *p)
 {
 	struct pt_regs *regs;
-	unsigned long flags;
 	const char *how;
 
 	if (!p)
