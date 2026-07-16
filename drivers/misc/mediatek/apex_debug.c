@@ -1,18 +1,11 @@
 /*
  * apex_debug.c - Debug init busy-loop by capturing real-time user-space PC
- * and dumping the linked list that init is traversing.
+ * and dumping registers. Uses IPI to capture the actual current PC.
  *
- * The loop is in libxml2's XML Catalog processing:
- *   while (node) {
- *     switch (node->type) {
- *       case 3: continue;  // skip
- *       case 5: if (xmlStrEqual(node->str, key)) goto found; break;
- *       case 8: if (prefix_match(node->str, key)) ...; break;
- *     }
- *     node = node->next;
- *   }
- *
- * If the linked list has a cycle, this loops forever.
+ * Key findings:
+ * - init is stuck in a string comparison loop (xmlStrEqual or similar)
+ * - x21 has MTE tag (0xb400...) which copy_from_user can't handle
+ * - PC alternates between init binary and a shared library
  */
 
 #include <linux/module.h>
@@ -20,28 +13,17 @@
 #include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
-#include <linux/fdtable.h>
-#include <linux/file.h>
-#include <linux/fs.h>
-#include <linux/poll.h>
-#include <linux/uaccess.h>
-#include <linux/delay.h>
-#include <linux/slab.h>
 #include <linux/smp.h>
+#include <linux/uaccess.h>
+#include <linux/slab.h>
 #include <asm/ptrace.h>
 
-extern unsigned long get_wchan(struct task_struct *p);
-
-/* IPI capture state */
 static struct {
 	struct task_struct *target;
+	u64 regs[31];
 	u64 pc;
-	u64 lr;
 	u64 sp;
-	u64 x21;  /* linked list node pointer */
-	u64 x22;  /* search key string */
-	u64 x25;  /* list head */
-	u64 x27;  /* accumulator */
+	u64 pstate;
 	int done;
 } ipi_capture;
 
@@ -49,6 +31,7 @@ static void ipi_capture_fn(void *info)
 {
 	struct task_struct *tsk = ipi_capture.target;
 	struct pt_regs *regs;
+	int i;
 
 	if (!tsk || tsk != current)
 		return;
@@ -56,20 +39,30 @@ static void ipi_capture_fn(void *info)
 	regs = task_pt_regs(tsk);
 	if (regs) {
 		ipi_capture.pc = regs->pc;
-		ipi_capture.lr = regs->regs[30];
 		ipi_capture.sp = regs->sp;
-		ipi_capture.x21 = regs->regs[21];
-		ipi_capture.x22 = regs->regs[22];
-		ipi_capture.x25 = regs->regs[25];
-		ipi_capture.x27 = regs->regs[27];
+		ipi_capture.pstate = regs->pstate;
+		for (i = 0; i < 31; i++)
+			ipi_capture.regs[i] = regs->regs[i];
 		ipi_capture.done = 1;
 	}
+}
+
+static u64 untag_addr(u64 addr)
+{
+	/* Remove MTE tag (top byte) for copy_from_user */
+#ifdef CONFIG_ARM64_TAGGED_ADDR
+	/* Android 14 uses top-byte-ignore / MTE
+	 * Tag is in bits 63:56 */
+	return addr & 0x00FFFFFFFFFFFFFFULL;
+#else
+	return addr;
+#endif
 }
 
 static void apex_capture_init_pc(void)
 {
 	struct task_struct *init_task;
-	int cpu;
+	int cpu, i;
 
 	rcu_read_lock();
 	init_task = find_task_by_vpid(1);
@@ -102,70 +95,28 @@ static void apex_capture_init_pc(void)
 		}
 
 		if (ipi_capture.done) {
-			pr_err("APEX_FIX: PC=0x%llx LR=0x%llx SP=0x%llx\n",
-				ipi_capture.pc, ipi_capture.lr, ipi_capture.sp);
-			pr_err("APEX_FIX: x21(node)=0x%llx x22(key)=0x%llx x25(head)=0x%llx x27=%llx\n",
-				ipi_capture.x21, ipi_capture.x22,
-				ipi_capture.x25, ipi_capture.x27);
+			pr_err("APEX_FIX: PC=0x%llx SP=0x%llx pstate=0x%llx\n",
+				ipi_capture.pc, ipi_capture.sp, ipi_capture.pstate);
+			/* Dump all registers */
+			for (i = 0; i < 31; i++) {
+				pr_err("APEX_FIX: x%d=0x%llx\n", i, ipi_capture.regs[i]);
+			}
 
-			/* Dump the linked list to detect cycles.
-			 * x21 is the current node. Each node starts with
-			 * a next pointer at offset 0.
-			 * Read up to 100 nodes from user space. */
-			if (ipi_capture.x21 && ipi_capture.x21 > 0x1000) {
-				u64 node = ipi_capture.x21;
-				u64 addrs[100];
-				u64 str_ptr;
-				u64 next;
-				u32 type;
-				int i, j, count = 0;
-				int cycle_at = -1;
-				char str_buf[64];
-
-				for (i = 0; i < 100 && node > 0x1000; i++) {
-					next = 0;
-					type = 0;
-					memset(str_buf, 0, sizeof(str_buf));
-
-					/* Read next pointer (offset 0) */
-					if (copy_from_user(&next, (void __user *)node, 8))
-						break;
-					/* Read type (offset 0x18) */
-					if (copy_from_user(&type, (void __user *)(node + 0x18), 4))
-						break;
-
-					addrs[i] = node;
-
-					/* Read string pointer (offset 0x20) */
-					str_ptr = 0;
-					if (copy_from_user(&str_ptr, (void __user *)(node + 0x20), 8))
-						str_ptr = 0;
-					if (str_ptr > 0x1000) {
-						copy_from_user(str_buf, (void __user *)str_ptr, 63);
-						str_buf[63] = 0;
+			/* Try to read memory at x0 (first arg) and x1 */
+			for (i = 0; i <= 4; i++) {
+				u64 addr = untag_addr(ipi_capture.regs[i]);
+				if (addr > 0x10000 && addr < 0x7fffffffffff) {
+					char buf[64];
+					memset(buf, 0, sizeof(buf));
+					if (!copy_from_user(buf, (void __user *)addr, 63)) {
+						buf[63] = 0;
+						pr_err("APEX_FIX: [x%d]=0x%llx -> \"%s\"\n",
+							i, ipi_capture.regs[i], buf);
+					} else {
+						pr_err("APEX_FIX: [x%d]=0x%llx -> (unreadable)\n",
+							i, ipi_capture.regs[i]);
 					}
-
-					/* Check for cycle */
-					for (j = 0; j < i; j++) {
-						if (addrs[j] == node) {
-							cycle_at = j;
-							break;
-						}
-					}
-					if (cycle_at >= 0) {
-						pr_err("APEX_FIX: *** CYCLE DETECTED *** node[%d]=node[%d]=0x%llx type=%d str=\"%s\"\n",
-							i, cycle_at, node, type, str_buf);
-						break;
-					}
-
-					pr_err("APEX_FIX: node[%d]=0x%llx type=%d next=0x%llx str=\"%s\"\n",
-						i, node, type, next, str_buf);
-
-					node = next;
-					count++;
 				}
-				if (cycle_at < 0)
-					pr_err("APEX_FIX: traversed %d nodes, no cycle found\n", count);
 			}
 		}
 	}
