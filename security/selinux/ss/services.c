@@ -1403,8 +1403,10 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	usrdatum = hashtab_search(pol->p_users.table, scontextp);
-	if (!usrdatum)
+	if (!usrdatum) {
+		pr_err("APEX_SELINUX: string_to_context_struct: user '%s' NOT FOUND\n", scontextp);
 		goto out;
+	}
 
 	ctx->user = usrdatum->value;
 
@@ -1419,8 +1421,10 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	role = hashtab_search(pol->p_roles.table, scontextp);
-	if (!role)
+	if (!role) {
+		pr_err("APEX_SELINUX: string_to_context_struct: role '%s' NOT FOUND\n", scontextp);
 		goto out;
+	}
 	ctx->role = role->value;
 
 	/* Extract type. */
@@ -1431,19 +1435,26 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
-	if (!typdatum)
+	if (!typdatum) {
+		pr_err("APEX_SELINUX: string_to_context_struct: type '%s' NOT FOUND\n", scontextp);
 		goto out;
+	}
 
 	ctx->type = typdatum->value;
 
 	rc = mls_context_to_sid(pol, oldc, p, ctx, sidtabp, def_sid);
-	if (rc)
+	if (rc) {
+		pr_err("APEX_SELINUX: string_to_context_struct: mls_context_to_sid FAILED rc=%d oldc=0x%x mls='%s'\n", rc, oldc, p);
 		goto out;
+	}
 
 	/* Check the validity of the new context. */
 	rc = -EINVAL;
-	if (!policydb_context_isvalid(pol, ctx))
+	if (!policydb_context_isvalid(pol, ctx)) {
+		pr_err("APEX_SELINUX: string_to_context_struct: policydb_context_isvalid FAILED for user=%u role=%u type=%u\n",
+			ctx->user, ctx->role, ctx->type);
 		goto out;
+	}
 	rc = 0;
 out:
 	if (rc)
@@ -1507,6 +1518,9 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	if (!scontext2)
 		return -ENOMEM;
 
+	pr_err("APEX_SELINUX: security_context_to_sid_core: ctx='%s' initialized=%d force=%d\n",
+		scontext2, state->initialized, force);
+
 	if (!state->initialized) {
 		int i;
 
@@ -1533,6 +1547,7 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	sidtab = state->ss->sidtab;
 	rc = string_to_context_struct(policydb, sidtab, scontext2,
 				      &context, def_sid);
+	pr_err("APEX_SELINUX: string_to_context_struct returned rc=%d for '%s'\n", rc, scontext2);
 	if (rc == -EINVAL && force) {
 		context.str = str;
 		context.len = strlen(str) + 1;
