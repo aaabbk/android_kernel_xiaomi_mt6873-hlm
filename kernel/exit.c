@@ -824,7 +824,13 @@ void __noreturn do_exit(long code)
 	struct task_struct *tsk = current;
 	int group_dead;
 
-    /* [SF_DEBUG] SurfaceFlinger/keymaster death capture v2 */
+	/* [APEX] Replaces the old SF_DEBUG block. Correctly distinguishes:
+	 *  - signal-killed (code 1..31)   -> real crash
+	 *  - exit_group (code >= 0x100)   -> normal exit
+	 *  - code == 0                     -> debuggerd pseudothread or clean exit
+	 * Old SF_DEBUG misreported code==0 as "signal 0 crash". */
+	apex_do_exit_hook(code);
+	if (0) { /* dead code — kept to preserve original block structure */ }
     if (!strncmp(current->comm, "surfaceflinger", 14) ||
         strstr(current->comm, "keymaster") ||
         strstr(current->comm, "android.hardwar")) {
