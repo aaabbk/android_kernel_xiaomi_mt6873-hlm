@@ -115,13 +115,17 @@ static void apex_capture_init_pc(void)
 			if (ipi_capture.x21 && ipi_capture.x21 > 0x1000) {
 				u64 node = ipi_capture.x21;
 				u64 addrs[100];
-				int i, count = 0;
+				u64 str_ptr;
+				u64 next;
+				u32 type;
+				int i, j, count = 0;
 				int cycle_at = -1;
+				char str_buf[64];
 
 				for (i = 0; i < 100 && node > 0x1000; i++) {
-					u64 next = 0;
-					u32 type = 0;
-					char str_buf[64] = {0};
+					next = 0;
+					type = 0;
+					memset(str_buf, 0, sizeof(str_buf));
 
 					/* Read next pointer (offset 0) */
 					if (copy_from_user(&next, (void __user *)node, 8))
@@ -133,7 +137,7 @@ static void apex_capture_init_pc(void)
 					addrs[i] = node;
 
 					/* Read string pointer (offset 0x20) */
-					u64 str_ptr = 0;
+					str_ptr = 0;
 					if (copy_from_user(&str_ptr, (void __user *)(node + 0x20), 8))
 						str_ptr = 0;
 					if (str_ptr > 0x1000) {
@@ -142,7 +146,7 @@ static void apex_capture_init_pc(void)
 					}
 
 					/* Check for cycle */
-					for (int j = 0; j < i; j++) {
+					for (j = 0; j < i; j++) {
 						if (addrs[j] == node) {
 							cycle_at = j;
 							break;
