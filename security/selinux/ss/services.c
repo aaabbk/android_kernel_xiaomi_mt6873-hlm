@@ -1404,8 +1404,7 @@ static int string_to_context_struct(struct policydb *pol,
 
 	usrdatum = hashtab_search(pol->p_users.table, scontextp);
 	if (!usrdatum) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: user '%s' NOT FOUND for '%s'\n", scontextp, scontext);
+		pr_err("APEX_SE: user '%s' NOT FOUND\n", scontextp);
 		goto out;
 	}
 
@@ -1417,8 +1416,7 @@ static int string_to_context_struct(struct policydb *pol,
 		p++;
 
 	if (*p == 0) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: no role separator for '%s'\n", scontext);
+		pr_err("APEX_SE: no role separator after user=%u\n", ctx->user);
 		goto out;
 	}
 
@@ -1426,8 +1424,7 @@ static int string_to_context_struct(struct policydb *pol,
 
 	role = hashtab_search(pol->p_roles.table, scontextp);
 	if (!role) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: role '%s' NOT FOUND for '%s'\n", scontextp, scontext);
+		pr_err("APEX_SE: role '%s' NOT FOUND\n", scontextp);
 		goto out;
 	}
 	ctx->role = role->value;
@@ -1441,8 +1438,7 @@ static int string_to_context_struct(struct policydb *pol,
 
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
 	if (!typdatum) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: type '%s' NOT FOUND for '%s'\n", scontextp, scontext);
+		pr_err("APEX_SE: type '%s' NOT FOUND\n", scontextp);
 		goto out;
 	}
 
@@ -1450,17 +1446,15 @@ static int string_to_context_struct(struct policydb *pol,
 
 	rc = mls_context_to_sid(pol, oldc, p, ctx, sidtabp, def_sid);
 	if (rc) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: mls FAILED rc=%d for '%s'\n", rc, scontext);
+		pr_err("APEX_SE: mls FAILED rc=%d oldc=0x%x\n", rc, oldc);
 		goto out;
 	}
 
 	/* Check the validity of the new context. */
 	rc = -EINVAL;
 	if (!policydb_context_isvalid(pol, ctx)) {
-		if (strstr(scontext, "batteryd"))
-			pr_err("APEX_SE: context_isvalid FAILED for '%s' user=%u role=%u type=%u\n",
-				scontext, ctx->user, ctx->role, ctx->type);
+		pr_err("APEX_SE: context_isvalid FAILED user=%u role=%u type=%u\n",
+			ctx->user, ctx->role, ctx->type);
 		goto out;
 	}
 	rc = 0;
@@ -1563,9 +1557,8 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	} else if (rc)
 		goto out_unlock;
 	rc = context_struct_to_sid(state, &context, sid);
-	if (rc && strstr(scontext2, "batteryd"))
-		pr_err("APEX_SE: context_struct_to_sid FAILED rc=%d for '%s'\n",
-			rc, scontext2);
+	if (rc)
+		pr_err("APEX_SE: context_struct_to_sid FAILED rc=%d\n", rc);
 	context_destroy(&context);
 out_unlock:
 	read_unlock(&state->ss->policy_rwlock);
