@@ -1403,8 +1403,11 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	usrdatum = hashtab_search(pol->p_users.table, scontextp);
-	if (!usrdatum)
+	if (!usrdatum) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: user '%s' NOT FOUND for '%s'\n", scontextp, scontext);
 		goto out;
+	}
 
 	ctx->user = usrdatum->value;
 
@@ -1413,14 +1416,20 @@ static int string_to_context_struct(struct policydb *pol,
 	while (*p && *p != ':')
 		p++;
 
-	if (*p == 0)
+	if (*p == 0) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: no role separator for '%s'\n", scontext);
 		goto out;
+	}
 
 	*p++ = 0;
 
 	role = hashtab_search(pol->p_roles.table, scontextp);
-	if (!role)
+	if (!role) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: role '%s' NOT FOUND for '%s'\n", scontextp, scontext);
 		goto out;
+	}
 	ctx->role = role->value;
 
 	/* Extract type. */
@@ -1431,19 +1440,29 @@ static int string_to_context_struct(struct policydb *pol,
 	*p++ = 0;
 
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
-	if (!typdatum)
+	if (!typdatum) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: type '%s' NOT FOUND for '%s'\n", scontextp, scontext);
 		goto out;
+	}
 
 	ctx->type = typdatum->value;
 
 	rc = mls_context_to_sid(pol, oldc, p, ctx, sidtabp, def_sid);
-	if (rc)
+	if (rc) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: mls FAILED rc=%d for '%s'\n", rc, scontext);
 		goto out;
+	}
 
 	/* Check the validity of the new context. */
 	rc = -EINVAL;
-	if (!policydb_context_isvalid(pol, ctx))
+	if (!policydb_context_isvalid(pol, ctx)) {
+		if (strstr(scontext, "batteryd"))
+			pr_err("APEX_SE: context_isvalid FAILED for '%s' user=%u role=%u type=%u\n",
+				scontext, ctx->user, ctx->role, ctx->type);
 		goto out;
+	}
 	rc = 0;
 out:
 	if (rc)
@@ -1506,6 +1525,10 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	scontext2 = kmemdup_nul(scontext, scontext_len, gfp_flags);
 	if (!scontext2)
 		return -ENOMEM;
+
+	if (strstr(scontext2, "batteryd"))
+		pr_err("APEX_SE: security_context_to_sid_core: ctx='%s' initialized=%d force=%d\n",
+			scontext2, state->initialized, force);
 
 	if (!state->initialized) {
 		int i;
