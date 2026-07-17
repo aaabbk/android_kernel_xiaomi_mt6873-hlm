@@ -172,16 +172,26 @@ static void apex_dump_task_stack(struct task_struct *task)
 
 static int apex_is_watch_target(struct task_struct *task)
 {
+	struct task_struct *p;
+
 	if (task->flags & PF_KTHREAD)
 		return 0;
 	if (!strncmp(task->comm, "app_process", 11)) return 1;
 	if (!strncmp(task->comm, "zygote", 6)) return 1;
-	if (!strncmp(task->comm, "main", 4) && task->parent &&
-	    !strncmp(task->parent->comm, "zygote", 6)) return 1;
+	/* zygote changes comm to "main" after exec */
+	if (!strncmp(task->comm, "main", 4) && task->parent) {
+		p = task->parent;
+		if (!strncmp(p->comm, "init", 4)) return 1;
+		if (!strncmp(p->comm, "zygote", 6)) return 1;
+		if (!strncmp(p->comm, "main", 4)) return 1;
+	}
 	if (!strncmp(task->comm, "system_server", 13)) return 1;
 	if (!strncmp(task->comm, "surfaceflinger", 14)) return 1;
 	if (!strncmp(task->comm, "bootanim", 8)) return 1;
 	if (!strncmp(task->comm, "init", 4) && task->pid <= 2) return 1;
+	/* Any D-state userspace process is interesting */
+	if (task->state & TASK_UNINTERRUPTIBLE)
+		return 1;
 	return 0;
 }
 
@@ -204,14 +214,25 @@ static void apex_watchdog_fn(struct timer_list *t)
 	pr_err("APEX_WDT: [%.1fs] sf=%d zygote_kids=%d bootanim=%d sys_srv=%d\n",
 		(float)jiffies_to_msecs(jiffies) / 1000, sf, zy, ba, ss);
 
-	/* After 20s, dump detailed thread status for watched processes */
-	if (jiffies_to_msecs(jiffies) > 20000 || apex_dump_count > 0) {
+	/* After 15s, dump detailed thread status for watched processes */
+	if (jiffies_to_msecs(jiffies) > 15000 || apex_dump_count > 0) {
 		apex_dump_count++;
 		pr_err("APEX_WDT: === Thread dump #%d ===\n", apex_dump_count);
 		rcu_read_lock();
 		for_each_process(task) {
+			int nthreads = 0;
+			struct task_struct *t;
+
 			if (!apex_is_watch_target(task))
 				continue;
+
+			/* Count threads */
+			for_each_thread(task, t)
+				nthreads++;
+
+			pr_err("APEX_WDT: --- pid=%d comm=%-16s threads=%d state=%s ---\n",
+				task->pid, task->comm, nthreads,
+				task_state_str(task->state));
 
 			/* Dump each thread of the process */
 			for_each_thread(task, thread) {
