@@ -1222,10 +1222,6 @@ int do_send_sig_info(int sig, struct siginfo *info, struct task_struct *p,
 	unsigned long flags;
 	int ret = -ESRCH;
 
-	/* [APEX] Capture fatal signal delivery BEFORE the handler runs.
-	 * This sees the real crash signal/PC that ramoops misses. */
-	apex_signal_hook(sig, info, p);
-
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, group);
 		unlock_task_sighand(p, &flags);

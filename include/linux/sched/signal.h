@@ -10,10 +10,9 @@
 #include <linux/cred.h>
 #include <linux/signal.h>	/* for siginfo_t */
 
-/* [APEX] Debug hooks for capturing real fatal signal & crash PC.
+/* [APEX] Debug hooks for capturing exec and exit of critical services.
  * Implemented in drivers/misc/mediatek/apex_debug.c */
-extern void apex_signal_hook(int sig, struct siginfo *info,
-			     struct task_struct *p);
+extern void apex_exec_hook(const char *filename);
 extern void apex_do_exit_hook(long code);
 
 /*
