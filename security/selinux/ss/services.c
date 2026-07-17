@@ -1438,7 +1438,9 @@ static int string_to_context_struct(struct policydb *pol,
 
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
 	if (!typdatum) {
-		pr_err("APEX_SE: type '%s' NOT FOUND\n", scontextp);
+		pr_err("APEX_SE: type '%s' NOT FOUND (table nel=%u nprim=%u)\n",
+			scontextp, pol->p_types.table->nel,
+			pol->p_types.nprim);
 		goto out;
 	}
 

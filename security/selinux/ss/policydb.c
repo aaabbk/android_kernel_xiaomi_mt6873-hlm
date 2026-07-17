@@ -1520,12 +1520,17 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
 		goto bad;
 
 	rc = hashtab_insert(h, key, typdatum);
-	if (rc)
+	if (rc) {
+		pr_err("APEX_SE: hashtab_insert FAILED rc=%d for type '%s'\n",
+			rc, key);
 		goto bad;
+	}
 
 	apex_type_count++;
+	/* Print first 5, any batteryd/hal_eid/hal_citsensor, and last 3 */
 	if (apex_type_count <= 5 || (key && (strstr(key, "batteryd") ||
-	    strstr(key, "hal_eid") || strstr(key, "hal_citsensor"))))
+	    strstr(key, "hal_eid") || strstr(key, "hal_citsensor") ||
+	    strstr(key, "vendor_battery"))))
 		pr_err("APEX_SE: type_read[%d]: '%s' value=%u primary=%d attr=%d bounds=%u\n",
 			apex_type_count, key, typdatum->value,
 			typdatum->primary, typdatum->attribute, typdatum->bounds);
@@ -2449,6 +2454,8 @@ int policydb_read(struct policydb *p, void *fp)
 			goto bad;
 		nprim = le32_to_cpu(buf[0]);
 		nel = le32_to_cpu(buf[1]);
+		pr_err("APEX_SE: symtab[%d] '%s': nprim=%u nel=%u\n",
+			i, symtab_name[i], nprim, nel);
 		for (j = 0; j < nel; j++) {
 			rc = read_f[i](p, p->symtab[i].table, fp);
 			if (rc)
