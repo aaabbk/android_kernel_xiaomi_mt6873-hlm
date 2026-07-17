@@ -1563,6 +1563,9 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	} else if (rc)
 		goto out_unlock;
 	rc = context_struct_to_sid(state, &context, sid);
+	if (rc && strstr(scontext2, "batteryd"))
+		pr_err("APEX_SE: context_struct_to_sid FAILED rc=%d for '%s'\n",
+			rc, scontext2);
 	context_destroy(&context);
 out_unlock:
 	read_unlock(&state->ss->policy_rwlock);
