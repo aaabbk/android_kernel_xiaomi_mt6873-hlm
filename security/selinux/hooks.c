@@ -6177,6 +6177,10 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 	int error;
 	char *str = value;
 
+	if (size > 0 && strstr(str, "batteryd"))
+		pr_err("APEX_SE: selinux_setprocattr ENTER name='%s' size=%zu value='%.*s'\n",
+			name, size, (int)(size > 128 ? 128 : size), str);
+
 	/*
 	 * Basic control over ability to set these attributes at all.
 	 */
@@ -6213,6 +6217,9 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 		}
 		error = security_context_to_sid(&selinux_state, value, size,
 						&sid, GFP_KERNEL);
+		if (size > 0 && strstr(str, "batteryd"))
+			pr_err("APEX_SE: security_context_to_sid returned error=%d sid=%u\n",
+				error, sid);
 		if (error == -EINVAL && !strcmp(name, "fscreate")) {
 			if (!has_cap_mac_admin(true)) {
 				struct audit_buffer *ab;
