@@ -2179,6 +2179,22 @@ int security_load_policy(struct selinux_state *state, void *data, size_t len)
 			goto out;
 		}
 
+		/* [APEX] Verify critical types are in the hashtable */
+		{
+			struct type_datum *td;
+			const char *check[] = {"batteryd", "batteryd_exec",
+				"hal_eid_default_exec", "init", "shell", NULL};
+			int i;
+			for (i = 0; check[i]; i++) {
+				td = hashtab_search(policydb->p_types.table, check[i]);
+				pr_err("APEX_SE: post-load check: '%s' -> %p%s\n",
+					check[i], td,
+					td ? "" : " MISSING!");
+			}
+			pr_err("APEX_SE: policy loaded: nprim=%u\n",
+				policydb->p_types.nprim);
+		}
+
 		policydb->len = len;
 		rc = selinux_set_mapping(policydb, secclass_map,
 					 &state->ss->map);

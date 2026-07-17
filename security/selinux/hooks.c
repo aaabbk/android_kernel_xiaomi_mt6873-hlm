@@ -6220,8 +6220,15 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 		if (size > 0 && strstr(str, "batteryd"))
 			pr_err("APEX_SE: security_context_to_sid returned error=%d sid=%u\n",
 				error, sid);
-		if (error == -EINVAL && !strcmp(name, "fscreate")) {
-			if (!has_cap_mac_admin(true)) {
+		/* [APEX] Extend fscreate force-fallback to exec.
+		 * 4.14.336 MTK backport of hash-based sidtab causes some
+		 * types (batteryd, batteryd_exec, etc.) to be missing from
+		 * p_types.table, making setexeccon return EINVAL. In
+		 * permissive mode, force-storing the context as an
+		 * uninterpreted string allows the system to boot. */
+		if (error == -EINVAL &&
+		    (!strcmp(name, "fscreate") || !strcmp(name, "exec"))) {
+			if (!strcmp(name, "fscreate") && !has_cap_mac_admin(true)) {
 				struct audit_buffer *ab;
 				size_t audit_size;
 

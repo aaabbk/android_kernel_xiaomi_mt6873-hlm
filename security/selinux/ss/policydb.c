@@ -1485,6 +1485,7 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
 	char *key = NULL;
 	struct type_datum *typdatum;
 	int rc, to_read = 3;
+	static int apex_type_count = 0;
 	__le32 buf[4];
 	u32 len;
 
@@ -1521,6 +1522,14 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
 	rc = hashtab_insert(h, key, typdatum);
 	if (rc)
 		goto bad;
+
+	apex_type_count++;
+	if (apex_type_count <= 5 || (key && (strstr(key, "batteryd") ||
+	    strstr(key, "hal_eid") || strstr(key, "hal_citsensor"))))
+		pr_err("APEX_SE: type_read[%d]: '%s' value=%u primary=%d attr=%d bounds=%u\n",
+			apex_type_count, key, typdatum->value,
+			typdatum->primary, typdatum->attribute, typdatum->bounds);
+
 	return 0;
 bad:
 	type_destroy(key, typdatum, NULL);
