@@ -1033,20 +1033,31 @@ void __iomem *ccci_map_phy_addr(phys_addr_t phy_addr, unsigned int size)
 {
 	void __iomem *map_addr = NULL;
 	pgprot_t prot;
+	int is_ram;
 
 	phy_addr &= PAGE_MASK;
-	if (!pfn_valid(__phys_to_pfn(phy_addr))) {
+	/* [APEX] Fix: use memblock_is_memory() instead of pfn_valid().
+	 * 4.14.336 backported a change to memblock_is_map_memory() that
+	 * adds a !memblock_is_nomap() check. LK marks MD shared memory
+	 * as no-map (MEMBLOCK_NOMAP), so pfn_valid() now returns false
+	 * for these RAM regions, causing ccci_map_phy_addr() to take the
+	 * ioremap_wc() path instead of vmap_reserved_mem(). This results
+	 * in wrong mapping attributes and MD receiving zero config data.
+	 * memblock_is_memory() does NOT check NOMAP, restoring 4.14.186
+	 * behavior where NOMAP RAM regions use vmap_reserved_mem(). */
+	is_ram = memblock_is_memory(phy_addr);
+	pr_err("APEX_MD: ccci_map_phy_addr: phy=0x%lx size=%u is_memory=%d pfn_valid=%d\n",
+		(unsigned long)phy_addr, size, is_ram,
+		pfn_valid(__phys_to_pfn(phy_addr)));
+
+	if (!is_ram) {
 		map_addr = ioremap_wc(phy_addr, size);
-		CCCI_UTIL_DBG_MSG(
-			"ioremap_wc: (%lx %p %d)\n",
-			(unsigned long)phy_addr, map_addr, size);
+		pr_err("APEX_MD:   -> ioremap_wc returned %p\n", map_addr);
 	} else {
 		prot = pgprot_writecombine(PAGE_KERNEL);
 		map_addr = (void __iomem *)vmap_reserved_mem(
 			phy_addr, size, prot);
-		CCCI_UTIL_DBG_MSG(
-			"vmap_reserved_mem: (%lx %p %d)\n",
-			(unsigned long)phy_addr, map_addr, size);
+		pr_err("APEX_MD:   -> vmap_reserved_mem returned %p\n", map_addr);
 	}
 	return map_addr;
 }
@@ -1381,7 +1392,11 @@ _common_process:
 		memset_io(s_g_lk_inf_base, 0, s_g_tag_inf_size);
 		iounmap(s_g_lk_inf_base);
 	} else if (s_g_lk_info_tag_version >= 3) {
-		if (!pfn_valid(__phys_to_pfn(s_g_tag_phy_addr))) {
+		/* [APEX] Fix: use memblock_is_memory() to match the mapping
+		 * path in ccci_map_phy_addr(). pfn_valid() returns false for
+		 * NOMAP regions, but we mapped with vmap_reserved_mem(), so
+		 * we must vunmap() not iounmap(). */
+		if (!memblock_is_memory(s_g_tag_phy_addr)) {
 			iounmap(s_g_lk_inf_base);
 		} else {
 			vunmap(s_g_lk_inf_base);
