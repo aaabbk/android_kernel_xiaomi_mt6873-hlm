@@ -18,6 +18,9 @@
 #include <linux/mm.h>
 #include <linux/timer.h>
 #include <linux/jiffies.h>
+#include <linux/stacktrace.h>
+#include <linux/sched/debug.h>
+#include <linux/kallsyms.h>
 #include <asm/ptrace.h>
 
 static const char * const apex_watch_bins[] = {
@@ -50,6 +53,9 @@ static int apex_watch_exec(const char *filename)
 	return 0;
 }
 
+/* ============================================================
+ * Hook 1: exec tracking
+ * ============================================================ */
 void apex_exec_hook(const char *filename)
 {
 	if (!filename)
@@ -61,6 +67,9 @@ void apex_exec_hook(const char *filename)
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
+/* ============================================================
+ * Hook 2: exit tracking
+ * ============================================================ */
 static const char *apex_sig_name(int sig)
 {
 	static const char *names[] = {
@@ -125,12 +134,60 @@ void apex_do_exit_hook(long code)
 }
 EXPORT_SYMBOL(apex_do_exit_hook);
 
+/* ============================================================
+ * Watchdog: dump blocked threads with stack traces
+ * ============================================================ */
 static struct timer_list apex_watchdog;
-static int apex_watchdog_fired;
+static int apex_dump_count;
+
+static const char *task_state_str(unsigned long state)
+{
+	if (state == 0) return "R";  /* Running */
+	if (state & TASK_INTERRUPTIBLE) return "S";
+	if (state & TASK_UNINTERRUPTIBLE) return "D";
+	if (state & TASK_STOPPED) return "T";
+	if (state & EXIT_ZOMBIE) return "Z";
+	if (state & EXIT_DEAD) return "X";
+	return "?";
+}
+
+static void apex_dump_task_stack(struct task_struct *task)
+{
+	unsigned long entries[16];
+	struct stack_trace trace;
+	int i;
+
+	trace.nr_entries = 0;
+	trace.entries = entries;
+	trace.max_entries = 16;
+	trace.skip = 0;
+
+	save_stack_trace_tsk(task, &trace);
+
+	for (i = 0; i < trace.nr_entries; i++) {
+		pr_err("APEX_WDT:   [%pK] %pS\n",
+			(void *)entries[i], (void *)entries[i]);
+	}
+}
+
+static int apex_is_watch_target(struct task_struct *task)
+{
+	if (task->flags & PF_KTHREAD)
+		return 0;
+	if (!strncmp(task->comm, "app_process", 11)) return 1;
+	if (!strncmp(task->comm, "zygote", 6)) return 1;
+	if (!strncmp(task->comm, "main", 4) && task->parent &&
+	    !strncmp(task->parent->comm, "zygote", 6)) return 1;
+	if (!strncmp(task->comm, "system_server", 13)) return 1;
+	if (!strncmp(task->comm, "surfaceflinger", 14)) return 1;
+	if (!strncmp(task->comm, "bootanim", 8)) return 1;
+	if (!strncmp(task->comm, "init", 4) && task->pid <= 2) return 1;
+	return 0;
+}
 
 static void apex_watchdog_fn(struct timer_list *t)
 {
-	struct task_struct *task;
+	struct task_struct *task, *thread;
 	int sf = 0, zy = 0, ba = 0, ss = 0;
 
 	rcu_read_lock();
@@ -144,20 +201,56 @@ static void apex_watchdog_fn(struct timer_list *t)
 	}
 	rcu_read_unlock();
 
-	pr_err("APEX_WDT: [%lus] surfaceflinger=%d zygote_children=%d bootanim=%d system_server=%d\n",
-		jiffies_to_msecs(jiffies) / 1000, sf, zy, ba, ss);
+	pr_err("APEX_WDT: [%.1fs] sf=%d zygote_kids=%d bootanim=%d sys_srv=%d\n",
+		(float)jiffies_to_msecs(jiffies) / 1000, sf, zy, ba, ss);
 
-	if (!sf && !apex_watchdog_fired && jiffies_to_msecs(jiffies) > 30000) {
-		apex_watchdog_fired = 1;
-		pr_err("APEX_WDT: WARNING: 30s reached, surfaceflinger NOT running!\n");
-		pr_err("APEX_WDT: Dumping all userspace processes:\n");
+	/* After 20s, dump detailed thread status for watched processes */
+	if (jiffies_to_msecs(jiffies) > 20000 || apex_dump_count > 0) {
+		apex_dump_count++;
+		pr_err("APEX_WDT: === Thread dump #%d ===\n", apex_dump_count);
 		rcu_read_lock();
 		for_each_process(task) {
-			if (!(task->flags & PF_KTHREAD) && task->mm)
-				pr_err("APEX_WDT:   pid=%d comm=%s\n",
-					task->pid, task->comm);
+			if (!apex_is_watch_target(task))
+				continue;
+
+			/* Dump each thread of the process */
+			for_each_thread(task, thread) {
+				unsigned long wchan;
+				char wchan_buf[128];
+
+				wchan = get_wchan(thread);
+				wchan_buf[0] = 0;
+				if (wchan)
+					snprintf(wchan_buf, sizeof(wchan_buf),
+						"%pS", (void *)wchan);
+
+				pr_err("APEX_WDT: pid=%d tgid=%d comm=%-16s state=%s wchan=%s\n",
+					thread->pid, thread->tgid, thread->comm,
+					task_state_str(thread->state),
+					wchan_buf[0] ? wchan_buf : "(none)");
+
+				/* Dump kernel stack if blocked (not running) */
+				if (thread->state != 0 && thread->state != EXIT_ZOMBIE &&
+				    task_curr(thread) == 0) {
+					apex_dump_task_stack(thread);
+				}
+			}
 		}
 		rcu_read_unlock();
+
+		/* Also dump all userspace processes if no zygote children */
+		if (zy == 0 && apex_dump_count == 1) {
+			pr_err("APEX_WDT: === All userspace processes ===\n");
+			rcu_read_lock();
+			for_each_process(task) {
+				if (!(task->flags & PF_KTHREAD) && task->mm)
+					pr_err("APEX_WDT:   pid=%d tgid=%d comm=%-16s state=%s parent=%s\n",
+						task->pid, task->tgid, task->comm,
+						task_state_str(task->state),
+						task->parent ? task->parent->comm : "?");
+			}
+			rcu_read_unlock();
+		}
 	}
 
 	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
@@ -166,7 +259,7 @@ static void apex_watchdog_fn(struct timer_list *t)
 static int __init apex_debug_init(void)
 {
 	pr_err("APEX: apex_debug loaded. kernel=%s\n", utsname()->release);
-	pr_err("APEX: tracking exec+exit of: zygote/surfaceflinger/bootanim/...\n");
+	pr_err("APEX: tracking exec+exit, watchdog dumps stacks after 20s\n");
 	timer_setup(&apex_watchdog, apex_watchdog_fn, 0);
 	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 	return 0;
