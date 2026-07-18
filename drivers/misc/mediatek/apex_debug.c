@@ -580,6 +580,9 @@ static void apex_check_mounts(void)
 	/* Critical: /metadata partition - vold checkpoint needs this */
 	apex_check_mount("/metadata");
 
+	/* Critical: /data partition - fscrypt target */
+	apex_check_mount("/data");
+
 	/* Check bootanimation binary */
 	err = kern_path("/system/bin/bootanimation", 0, &p);
 	if (err)
