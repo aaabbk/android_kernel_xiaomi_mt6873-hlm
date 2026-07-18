@@ -2379,8 +2379,14 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	union bpf_attr attr;
 	int err;
 
-	pr_err("APEX_BPF: syscall cmd=%d pid=%d comm=%s\n",
-		cmd, current->pid, current->comm);
+	/* [APEX] Only log the first bpf() call per process to avoid log flood */
+	{
+		static atomic_t apex_bpf_first = ATOMIC_INIT(0);
+		int old = atomic_xchg(&apex_bpf_first, 1);
+		if (!old)
+			pr_err("APEX_BPF: first syscall cmd=%d pid=%d comm=%s\n",
+				cmd, current->pid, current->comm);
+	}
 
 	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
