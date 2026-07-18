@@ -354,9 +354,11 @@ static void apex_dump_vbmeta(void)
 		return;
 	}
 
-	bdev = bdget(disk_devt(disk));
-	if (!bdev) {
-		pr_err("APEX_VBMETA: bdget failed\n");
+	/* blkdev_get_by_dev properly initializes the bdev (bdget alone is not enough) */
+	bdev = blkdev_get_by_dev(disk_devt(disk), FMODE_READ, NULL);
+	if (IS_ERR_OR_NULL(bdev)) {
+		pr_err("APEX_VBMETA: blkdev_get_by_dev failed: %ld\n",
+			PTR_ERR(bdev));
 		return;
 	}
 
@@ -366,7 +368,7 @@ static void apex_dump_vbmeta(void)
 	if (!bh) {
 		pr_err("APEX_VBMETA: __bread failed for sector %llu\n",
 			(unsigned long long)sector);
-		bdput(bdev);
+		blkdev_put(bdev, FMODE_READ);
 		return;
 	}
 
@@ -402,7 +404,7 @@ static void apex_dump_vbmeta(void)
 	}
 
 	brelse(bh);
-	bdput(bdev);
+	blkdev_put(bdev, FMODE_READ);
 }
 
 static int __init apex_debug_init(void)
