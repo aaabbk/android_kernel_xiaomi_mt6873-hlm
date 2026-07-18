@@ -146,6 +146,10 @@ void apex_do_exit_hook(long code)
 }
 EXPORT_SYMBOL(apex_do_exit_hook);
 
+/* Forward declaration - apex_check_mounts() is defined later but used
+ * by the watchdog timer callback. */
+static void apex_check_mounts(void);
+
 /* ============================================================
  * Watchdog: dump blocked threads with stack traces
  * Fires every 10 seconds. After 15 seconds starts dumping
@@ -467,7 +471,7 @@ static void apex_dump_partitions(void)
 	while ((part = disk_part_iter_next(&piter))) {
 		const char *name = "(none)";
 
-		if (part->info && part->info->volname)
+		if (part->info && part->info->volname[0])
 			name = part->info->volname;
 		pr_err("APEX_PART:  part%d start=%llu nr_sects=%llu volname='%s'\n",
 			part->partno,
@@ -595,7 +599,7 @@ static void apex_check_mount(const char *path)
 	if (p.mnt->mnt_root == p.dentry) {
 		if (p.mnt->mnt_sb->s_type && p.mnt->mnt_sb->s_type->name)
 			fs_type = p.mnt->mnt_sb->s_type->name;
-		if (p.mnt->mnt_sb->s_id)
+		if (p.mnt->mnt_sb->s_id[0])
 			s_id = p.mnt->mnt_sb->s_id;
 		pr_err("APEX_MOUNT: '%s': MOUNTED fs=%s dev=%s\n",
 			path, fs_type, s_id);
