@@ -38,6 +38,20 @@ static const char * const apex_watch_bins[] = {
 	"keystore",
 	"netd",
 	"vold",
+	/* [APEX] Critical for boot chain */
+	"bpfloader",
+	"/system/bin/bpfloader",
+	"bootctrl",
+	"android.hardware.boot",
+	"boot.control",
+	"/vendor/bin/hw/android.hardware.boot",
+	"linkerconfig",
+	"/system/bin/linkerconfig",
+	"secilc",
+	"/system/bin/secilc",
+	"apexd",
+	"/system/bin/apexd",
+	"init",
 	NULL,
 };
 
@@ -60,10 +74,25 @@ void apex_exec_hook(const char *filename)
 {
 	if (!filename)
 		return;
-	if (!apex_watch_exec(filename))
+
+	/* Always log watched binaries */
+	if (apex_watch_exec(filename)) {
+		pr_err("APEX_EXEC: pid=%d comm=%s exec='%s'\n",
+			current->pid, current->comm, filename);
 		return;
-	pr_err("APEX_EXEC: pid=%d comm=%s exec='%s'\n",
-		current->pid, current->comm, filename);
+	}
+
+	/* Also log ALL exec from pid 1 (init) to trace action chain */
+	if (current->pid == 1 || (current->parent && current->parent->pid == 1)) {
+		if (strstr(filename, "/system/bin/") ||
+		    strstr(filename, "/vendor/bin/") ||
+		    strstr(filename, "/system/xbin/")) {
+			pr_err("APEX_EXEC_INIT: pid=%d ppid=%d exec='%s'\n",
+				current->pid,
+				current->parent ? current->parent->pid : 0,
+				filename);
+		}
+	}
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
@@ -101,7 +130,13 @@ void apex_do_exit_hook(long code)
 	    strncmp(t->comm, "servicemanager", 14) &&
 	    strncmp(t->comm, "hwservicemanager", 16) &&
 	    strncmp(t->comm, "vold", 4) &&
-	    strncmp(t->comm, "netd", 4))
+	    strncmp(t->comm, "netd", 4) &&
+	    strncmp(t->comm, "bpfloader", 9) &&
+	    strncmp(t->comm, "bootctrl", 8) &&
+	    strncmp(t->comm, "secilc", 6) &&
+	    strncmp(t->comm, "apexd", 5) &&
+	    strncmp(t->comm, "linkerconfig", 12) &&
+	    strncmp(t->comm, "keystore2", 9))
 		return;
 
 	if (code > 0 && code < 0x80) {
