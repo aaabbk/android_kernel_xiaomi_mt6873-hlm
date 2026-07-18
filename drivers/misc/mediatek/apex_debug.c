@@ -28,6 +28,7 @@
 #include <linux/highmem.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
+#include <linux/workqueue.h>
 #include <asm/ptrace.h>
 #include <mt-plat/mtk_boot.h>
 
@@ -150,6 +151,14 @@ EXPORT_SYMBOL(apex_do_exit_hook);
  * by the watchdog timer callback. */
 static void apex_check_mounts(void);
 
+/* Workqueue for mount checks - kern_path() requires process context,
+ * cannot be called from timer softirq context. */
+static struct work_struct apex_mount_work;
+static void apex_mount_work_fn(struct work_struct *work)
+{
+	apex_check_mounts();
+}
+
 /* ============================================================
  * Watchdog: dump blocked threads with stack traces
  * Fires every 10 seconds. After 15 seconds starts dumping
@@ -158,7 +167,7 @@ static void apex_check_mounts(void);
 static struct timer_list apex_watchdog;
 static int apex_dump_count;
 
-static const char *task_state_str(unsigned long state)
+static const char * __maybe_unused task_state_str(unsigned long state)
 {
 	if (state == 0) return "R";  /* Running */
 	if (state & TASK_INTERRUPTIBLE) return "S";
@@ -169,7 +178,7 @@ static const char *task_state_str(unsigned long state)
 	return "?";
 }
 
-static void apex_dump_task_stack(struct task_struct *task)
+static void __maybe_unused apex_dump_task_stack(struct task_struct *task)
 {
 	unsigned long entries[16];
 	struct stack_trace trace;
@@ -188,7 +197,7 @@ static void apex_dump_task_stack(struct task_struct *task)
 	}
 }
 
-static int apex_is_watch_target(struct task_struct *task)
+static int __maybe_unused apex_is_watch_target(struct task_struct *task)
 {
 	struct task_struct *p;
 
@@ -216,8 +225,8 @@ static int apex_is_watch_target(struct task_struct *task)
 
 static void apex_watchdog_fn(struct timer_list *t)
 {
-	struct task_struct *task, *thread;
-	int sf = 0, zy = 0, ba = 0, ss = 0;
+	struct task_struct *task;
+	int sf = 0, zy = 0, ba = 0, ss = 0, vold = 0;
 
 	rcu_read_lock();
 	for_each_process(task) {
@@ -227,86 +236,28 @@ static void apex_watchdog_fn(struct timer_list *t)
 			 strncmp(task->parent->comm, "zygote", 6) == 0) zy++;
 		else if (strncmp(task->comm, "bootanim", 8) == 0) ba++;
 		else if (strncmp(task->comm, "system_server", 13) == 0) ss++;
+		else if (strncmp(task->comm, "vold", 4) == 0) vold++;
 	}
 	rcu_read_unlock();
 
-	pr_err("APEX_WDT: t=%ds sf=%d zygote_kids=%d bootanim=%d sys_srv=%d\n",
-		(int)(jiffies_to_msecs(jiffies) / 1000), sf, zy, ba, ss);
+	/* Single-line status summary - minimal log footprint */
+	pr_err("APEX_WDT: t=%ds sf=%d zy=%d ba=%d ss=%d vold=%d\n",
+		(int)(jiffies_to_msecs(jiffies) / 1000), sf, zy, ba, ss, vold);
 
-	/* Check mount points - critical for understanding vold failure */
-	apex_check_mounts();
-
-	/* After 8s, dump detailed thread status for watched processes */
-	if (jiffies_to_msecs(jiffies) > 8000 || apex_dump_count > 0) {
-		apex_dump_count++;
-		pr_err("APEX_WDT: === Thread dump #%d ===\n", apex_dump_count);
-		rcu_read_lock();
-		for_each_process(task) {
-			int nthreads = 0;
-			struct task_struct *tmp;
-
-			if (!apex_is_watch_target(task))
-				continue;
-
-			/* Count threads */
-			for_each_thread(task, tmp)
-				nthreads++;
-
-			pr_err("APEX_WDT: --- pid=%d comm=%-16s threads=%d state=%s ---\n",
-				task->pid, task->comm, nthreads,
-				task_state_str(task->state));
-
-			/* Dump each thread of the process */
-			for_each_thread(task, thread) {
-				unsigned long wchan;
-				char wchan_buf[128];
-
-				wchan = get_wchan(thread);
-				wchan_buf[0] = 0;
-				if (wchan)
-					snprintf(wchan_buf, sizeof(wchan_buf),
-						"%pS", (void *)wchan);
-
-				pr_err("APEX_WDT:   [%d] %s state=%s wchan=%s\n",
-					thread->pid, thread->comm,
-					task_state_str(thread->state),
-					wchan_buf[0] ? wchan_buf : "(none)");
-
-				/* Dump kernel stack if blocked (not running) */
-				if (thread->state != 0 &&
-				    thread->state != EXIT_ZOMBIE &&
-				    task_curr(thread) == 0) {
-					apex_dump_task_stack(thread);
-				}
-			}
-		}
-		rcu_read_unlock();
-
-		/* Also dump all userspace processes if no zygote children */
-		if (zy == 0 && apex_dump_count == 1) {
-			pr_err("APEX_WDT: === All userspace processes ===\n");
-			rcu_read_lock();
-			for_each_process(task) {
-				if (!(task->flags & PF_KTHREAD) && task->mm)
-					pr_err("APEX_WDT:   pid=%d tgid=%d comm=%-16s state=%s parent=%s\n",
-						task->pid, task->tgid,
-						task->comm,
-						task_state_str(task->state),
-						task->parent ?
-						task->parent->comm : "?");
-			}
-			rcu_read_unlock();
-		}
+	/* Only do mount check ONCE at 10s, not every 5s */
+	if (jiffies_to_msecs(jiffies) >= 10000 && apex_dump_count == 0) {
+		apex_dump_count = 1;
+		schedule_work(&apex_mount_work);
 	}
 
-	mod_timer(&apex_watchdog, jiffies + 5 * HZ);
+	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 }
 
 /* ============================================================
  * vbmeta partition dump - verify block device read correctness
  * Reads the AVB vbmeta header and verifies the magic + hash_size.
  * ============================================================ */
-static void apex_dump_vbmeta(void)
+static void __maybe_unused apex_dump_vbmeta(void)
 {
 	struct block_device *bdev;
 	struct gendisk *disk;
@@ -442,7 +393,7 @@ static void apex_dump_vbmeta(void)
 /* ============================================================
  * Partition listing - dump all partitions on the main block device
  * ============================================================ */
-static void apex_dump_partitions(void)
+static void __maybe_unused apex_dump_partitions(void)
 {
 	dev_t devt;
 	int partno;
@@ -486,7 +437,7 @@ static void apex_dump_partitions(void)
  * Metadata partition check - read first sector to look for checkpoint
  * magic bytes that vold expects.
  * ============================================================ */
-static void apex_check_metadata_part(void)
+static void __maybe_unused apex_check_metadata_part(void)
 {
 	struct hd_struct *part;
 	struct block_device *bdev;
@@ -613,63 +564,26 @@ static void apex_check_mount(const char *path)
 
 static void apex_check_mounts(void)
 {
-	pr_err("APEX_MOUNT: === mount point check at t=%ds ===\n",
+	struct path p;
+	int err;
+
+	pr_err("APEX_MOUNT: check at t=%ds\n",
 		(int)(jiffies_to_msecs(jiffies) / 1000));
 
-	apex_check_mount("/metadata");
-	apex_check_mount("/metadata/vold");
-	apex_check_mount("/data");
-	apex_check_mount("/system");
-	apex_check_mount("/vendor");
-	apex_check_mount("/apex");
+	/* Only check the most critical paths for bootanim issue */
+	apex_check_mount("/dev/binder");
+	apex_check_mount("/dev/hwbinder");
+	apex_check_mount("/dev/vndbinder");
+	apex_check_mount("/dev/fb0");
+	apex_check_mount("/dev/dri/card0");
 
-	/* Also check specific files vold needs */
-	{
-		struct path p;
-		int err;
-
-		err = kern_path("/metadata/vold/checkpoint", 0, &p);
-		if (err) {
-			pr_err("APEX_MOUNT: /metadata/vold/checkpoint: NOT FOUND (err=%d)\n", err);
-		} else {
-			pr_err("APEX_MOUNT: /metadata/vold/checkpoint: EXISTS size=%lld\n",
-				(long long)p.dentry->d_inode->i_size);
-			path_put(&p);
-		}
-
-		/* Check binder devices - bootctrl HAL needs hwbinder */
-		err = kern_path("/dev/binder", 0, &p);
-		if (err)
-			pr_err("APEX_MOUNT: /dev/binder: NOT FOUND (err=%d)\n", err);
-		else {
-			pr_err("APEX_MOUNT: /dev/binder: EXISTS\n");
-			path_put(&p);
-		}
-
-		err = kern_path("/dev/hwbinder", 0, &p);
-		if (err)
-			pr_err("APEX_MOUNT: /dev/hwbinder: NOT FOUND (err=%d)\n", err);
-		else {
-			pr_err("APEX_MOUNT: /dev/hwbinder: EXISTS\n");
-			path_put(&p);
-		}
-
-		err = kern_path("/dev/vndbinder", 0, &p);
-		if (err)
-			pr_err("APEX_MOUNT: /dev/vndbinder: NOT FOUND (err=%d)\n", err);
-		else {
-			pr_err("APEX_MOUNT: /dev/vndbinder: EXISTS\n");
-			path_put(&p);
-		}
-
-		/* Check /dev/block/by-name/ symlinks (created by init) */
-		err = kern_path("/dev/block/by-name/metadata", 0, &p);
-		if (err)
-			pr_err("APEX_MOUNT: /dev/block/by-name/metadata: NOT FOUND (err=%d)\n", err);
-		else {
-			pr_err("APEX_MOUNT: /dev/block/by-name/metadata: EXISTS\n");
-			path_put(&p);
-		}
+	/* Check bootanimation binary */
+	err = kern_path("/system/bin/bootanimation", 0, &p);
+	if (err)
+		pr_err("APEX_MOUNT: bootanimation: NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_MOUNT: bootanimation: EXISTS\n");
+		path_put(&p);
 	}
 }
 
@@ -717,28 +631,16 @@ static void apex_dump_cmdline(void)
 static int __init apex_debug_init(void)
 {
 	pr_err("APEX: apex_debug loaded. kernel=%s\n", utsname()->release);
-	pr_err("APEX: tracking exec+exit, watchdog dumps stacks after 15s\n");
 
-	/* Dump all partitions to verify metadata partition exists */
-	apex_dump_partitions();
-
-	/* Check metadata partition content */
-	apex_check_metadata_part();
-
-	/* Dump vbmeta partition to verify block device read */
-	apex_dump_vbmeta();
-
-	/* Dump kernel command line */
+	/* Dump kernel command line only - minimal startup info */
 	apex_dump_cmdline();
 
-	/* Initial mount check (most partitions not mounted yet at late_initcall,
-	 * but /system and /vendor should be) */
-	apex_check_mounts();
+	/* Initialize workqueue for mount checks from timer context */
+	INIT_WORK(&apex_mount_work, apex_mount_work_fn);
 
-	/* Start watchdog - first fire at 5s to catch pre-vold state,
-	 * then every 10s after */
+	/* Start watchdog - first fire at 10s, then every 10s */
 	timer_setup(&apex_watchdog, apex_watchdog_fn, 0);
-	mod_timer(&apex_watchdog, jiffies + 5 * HZ);
+	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 	return 0;
 }
 late_initcall(apex_debug_init);
