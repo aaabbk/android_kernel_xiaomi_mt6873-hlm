@@ -1480,12 +1480,14 @@ bad:
 	return rc;
 }
 
+/* [APEX] Count types loaded during policy read for diagnostics */
+static int apex_type_count;
+
 static int type_read(struct policydb *p, struct hashtab *h, void *fp)
 {
 	char *key = NULL;
 	struct type_datum *typdatum;
 	int rc, to_read = 3;
-	static int apex_type_count = 0;
 	__le32 buf[4];
 	u32 len;
 

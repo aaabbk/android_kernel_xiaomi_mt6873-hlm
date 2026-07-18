@@ -74,6 +74,10 @@
 
 #include <mt-plat/mtk_pidmap.h>
 
+/* [APEX] Debug hook for capturing exec of critical services.
+ * Implemented in drivers/misc/mediatek/apex_debug.c */
+extern void apex_exec_hook(const char *filename);
+
 int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
@@ -1845,6 +1849,8 @@ static int do_execveat_common(int fd, struct filename *filename,
 	membarrier_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
+	/* [APEX] Log successful exec of critical services */
+	apex_exec_hook(bprm->filename);
 	free_bprm(bprm);
 	kfree(pathbuf);
 	putname(filename);

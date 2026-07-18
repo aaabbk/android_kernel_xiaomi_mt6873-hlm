@@ -72,6 +72,10 @@
 #include <linux/mmu_context.h>
 #include <asm/mmu_context.h>
 
+/* [APEX] Debug hook for capturing exit of critical services.
+ * Implemented in drivers/misc/mediatek/apex_debug.c */
+extern void apex_do_exit_hook(long code);
+
 /*
  * The default value should be high enough to not crash a system that randomly
  * crashes its kernel from time to time, but low enough to at least not permit

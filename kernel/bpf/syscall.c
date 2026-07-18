@@ -27,6 +27,7 @@
 #include <linux/cred.h>
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
+#include <linux/atomic.h>
 #include <linux/btf.h>
 
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PROG_ARRAY || \
