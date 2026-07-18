@@ -577,12 +577,32 @@ static void apex_check_mounts(void)
 	apex_check_mount("/dev/fb0");
 	apex_check_mount("/dev/dri/card0");
 
+	/* Critical: /metadata partition - vold checkpoint needs this */
+	apex_check_mount("/metadata");
+
 	/* Check bootanimation binary */
 	err = kern_path("/system/bin/bootanimation", 0, &p);
 	if (err)
 		pr_err("APEX_MOUNT: bootanimation: NOT FOUND (err=%d)\n", err);
 	else {
 		pr_err("APEX_MOUNT: bootanimation: EXISTS\n");
+		path_put(&p);
+	}
+
+	/* Check vold checkpoint file - "No magic" error source */
+	err = kern_path("/metadata/vold", 0, &p);
+	if (err)
+		pr_err("APEX_MOUNT: /metadata/vold: NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_MOUNT: /metadata/vold: EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/metadata/vold/checkpoint", 0, &p);
+	if (err)
+		pr_err("APEX_MOUNT: /metadata/vold/checkpoint: NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_MOUNT: /metadata/vold/checkpoint: EXISTS\n");
 		path_put(&p);
 	}
 }
