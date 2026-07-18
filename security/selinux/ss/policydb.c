@@ -2449,13 +2449,15 @@ int policydb_read(struct policydb *p, void *fp)
 	}
 
 	for (i = 0; i < info->sym_num; i++) {
+		static const char *apex_sym_names[] = {"commons", "classes",
+			"roles", "types", "users", "bools", "levels", "cats"};
 		rc = next_entry(buf, fp, sizeof(u32)*2);
 		if (rc)
 			goto bad;
 		nprim = le32_to_cpu(buf[0]);
 		nel = le32_to_cpu(buf[1]);
 		pr_err("APEX_SE: symtab[%d] '%s': nprim=%u nel=%u\n",
-			i, symtab_name[i], nprim, nel);
+			i, i < 8 ? apex_sym_names[i] : "?", nprim, nel);
 		for (j = 0; j < nel; j++) {
 			rc = read_f[i](p, p->symtab[i].table, fp);
 			if (rc)
