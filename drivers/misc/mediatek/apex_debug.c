@@ -312,10 +312,107 @@ static void apex_watchdog_fn(struct timer_list *t)
 	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 }
 
+/* ============================================================
+ * vbmeta partition dump - verify block device read correctness
+ * ============================================================ */
+#include <linux/buffer_head.h>
+#include <linux/blkdev.h>
+#include <linux/genhd.h>
+
+extern struct hd_struct *get_part(const char *name);
+
+static void apex_dump_vbmeta(void)
+{
+	struct block_device *bdev;
+	struct gendisk *disk;
+	struct hd_struct *part;
+	struct buffer_head *bh;
+	sector_t sector;
+	char *data;
+	int i;
+
+	/* Try to find vbmeta partition via get_part */
+	part = get_part("vbmeta");
+	if (!part) {
+		pr_err("APEX_VBMETA: get_part('vbmeta') returned NULL\n");
+		part = get_part("vbmeta_a");
+		if (!part) {
+			pr_err("APEX_VBMETA: get_part('vbmeta_a') also NULL\n");
+			return;
+		}
+		pr_err("APEX_VBMETA: found 'vbmeta_a' instead\n");
+	}
+
+	pr_err("APEX_VBMETA: partition start_sect=%llu nr_sects=%llu\n",
+		(unsigned long long)part->start_sect,
+		(unsigned long long)part->nr_sects);
+
+	/* Get the whole disk block_device */
+	disk = dev_to_disk(part_to_dev(part)->parent);
+	if (!disk) {
+		pr_err("APEX_VBMETA: cannot get disk\n");
+		return;
+	}
+
+	bdev = bdget(disk_devt(disk));
+	if (!bdev) {
+		pr_err("APEX_VBMETA: bdget failed\n");
+		return;
+	}
+
+	/* Read first 512 bytes of vbmeta partition */
+	sector = part->start_sect;
+	bh = __bread(bdev, sector, 512);
+	if (!bh) {
+		pr_err("APEX_VBMETA: __bread failed for sector %llu\n",
+			(unsigned long long)sector);
+		bdput(bdev);
+		return;
+	}
+
+	data = (char *)bh->b_data;
+	pr_err("APEX_VBMETA: first 64 bytes of vbmeta:\n");
+	for (i = 0; i < 64; i += 16) {
+		pr_err("APEX_VBMETA: %03x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			i,
+			(unsigned char)data[i], (unsigned char)data[i+1],
+			(unsigned char)data[i+2], (unsigned char)data[i+3],
+			(unsigned char)data[i+4], (unsigned char)data[i+5],
+			(unsigned char)data[i+6], (unsigned char)data[i+7],
+			(unsigned char)data[i+8], (unsigned char)data[i+9],
+			(unsigned char)data[i+10], (unsigned char)data[i+11],
+			(unsigned char)data[i+12], (unsigned char)data[i+13],
+			(unsigned char)data[i+14], (unsigned char)data[i+15]);
+	}
+
+	/* Check AVB magic "AVB0" */
+	if (data[0] == 'A' && data[1] == 'V' && data[2] == 'B' && data[3] == '0') {
+		u32 hash_size;
+		/* hash_size is at offset 8-11 in avb_vbmeta_image_header (big-endian) */
+		hash_size = ((unsigned char)data[8] << 24) |
+			    ((unsigned char)data[9] << 16) |
+			    ((unsigned char)data[10] << 8) |
+			    ((unsigned char)data[11]);
+		pr_err("APEX_VBMETA: AVB magic OK! hash_size=%u (0x%x)\n",
+			hash_size, hash_size);
+	} else {
+		pr_err("APEX_VBMETA: AVB magic NOT found! first 4 bytes: %02x %02x %02x %02x\n",
+			(unsigned char)data[0], (unsigned char)data[1],
+			(unsigned char)data[2], (unsigned char)data[3]);
+	}
+
+	brelse(bh);
+	bdput(bdev);
+}
+
 static int __init apex_debug_init(void)
 {
 	pr_err("APEX: apex_debug loaded. kernel=%s\n", utsname()->release);
 	pr_err("APEX: tracking exec+exit, watchdog dumps stacks after 20s\n");
+
+	/* Dump vbmeta partition to verify block device read */
+	apex_dump_vbmeta();
+
 	timer_setup(&apex_watchdog, apex_watchdog_fn, 0);
 	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 	return 0;

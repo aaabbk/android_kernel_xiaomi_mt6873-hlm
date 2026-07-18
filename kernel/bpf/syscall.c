@@ -2379,6 +2379,9 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	union bpf_attr attr;
 	int err;
 
+	pr_err("APEX_BPF: syscall cmd=%d pid=%d comm=%s\n",
+		cmd, current->pid, current->comm);
+
 	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 

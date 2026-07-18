@@ -640,10 +640,12 @@ static int __init bpf_init(void)
 	int ret;
 
 	ret = sysfs_create_mount_point(fs_kobj, "bpf");
+	pr_err("APEX_BPF: bpf_init: sysfs_create_mount_point=%d\n", ret);
 	if (ret)
 		return ret;
 
 	ret = register_filesystem(&bpf_fs_type);
+	pr_err("APEX_BPF: bpf_init: register_filesystem=%d\n", ret);
 	if (ret)
 		sysfs_remove_mount_point(fs_kobj, "bpf");
 
