@@ -329,7 +329,6 @@ static void apex_dump_vbmeta(void)
 	struct buffer_head *bh;
 	sector_t sector;
 	char *data;
-	int i;
 
 	/* Try to find vbmeta partition via get_part */
 	part = get_part("vbmeta");
@@ -375,7 +374,6 @@ static void apex_dump_vbmeta(void)
 		struct page *page;
 		char *kaddr;
 		pgoff_t index;
-		int ret;
 
 		pr_err("APEX_VBMETA: __bread failed for sector %llu, trying page cache\n",
 			(unsigned long long)sector);
