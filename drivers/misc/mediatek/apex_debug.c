@@ -362,48 +362,80 @@ static void apex_dump_vbmeta(void)
 		return;
 	}
 
-	/* Read first 512 bytes of vbmeta partition */
+	/* Read first 512 bytes of vbmeta partition using page cache */
 	sector = part->start_sect;
+
+	/* Method 1: try __bread first */
 	bh = __bread(bdev, sector, 512);
-	if (!bh) {
-		pr_err("APEX_VBMETA: __bread failed for sector %llu\n",
-			(unsigned long long)sector);
-		blkdev_put(bdev, FMODE_READ);
-		return;
-	}
-
-	data = (char *)bh->b_data;
-	pr_err("APEX_VBMETA: first 64 bytes of vbmeta:\n");
-	for (i = 0; i < 64; i += 16) {
-		pr_err("APEX_VBMETA: %03x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-			i,
-			(unsigned char)data[i], (unsigned char)data[i+1],
-			(unsigned char)data[i+2], (unsigned char)data[i+3],
-			(unsigned char)data[i+4], (unsigned char)data[i+5],
-			(unsigned char)data[i+6], (unsigned char)data[i+7],
-			(unsigned char)data[i+8], (unsigned char)data[i+9],
-			(unsigned char)data[i+10], (unsigned char)data[i+11],
-			(unsigned char)data[i+12], (unsigned char)data[i+13],
-			(unsigned char)data[i+14], (unsigned char)data[i+15]);
-	}
-
-	/* Check AVB magic "AVB0" */
-	if (data[0] == 'A' && data[1] == 'V' && data[2] == 'B' && data[3] == '0') {
-		u32 hash_size;
-		/* hash_size is at offset 8-11 in avb_vbmeta_image_header (big-endian) */
-		hash_size = ((unsigned char)data[8] << 24) |
-			    ((unsigned char)data[9] << 16) |
-			    ((unsigned char)data[10] << 8) |
-			    ((unsigned char)data[11]);
-		pr_err("APEX_VBMETA: AVB magic OK! hash_size=%u (0x%x)\n",
-			hash_size, hash_size);
+	if (bh) {
+		data = (char *)bh->b_data;
+		pr_err("APEX_VBMETA: __bread succeeded, dumping data:\n");
 	} else {
-		pr_err("APEX_VBMETA: AVB magic NOT found! first 4 bytes: %02x %02x %02x %02x\n",
-			(unsigned char)data[0], (unsigned char)data[1],
-			(unsigned char)data[2], (unsigned char)data[3]);
+		/* Method 2: read via page cache directly */
+		struct page *page;
+		char *kaddr;
+		pgoff_t index;
+		int ret;
+
+		pr_err("APEX_VBMETA: __bread failed for sector %llu, trying page cache\n",
+			(unsigned long long)sector);
+
+		index = sector >> (PAGE_SHIFT - SECTOR_SHIFT);
+		page = read_mapping_page(bdev->bd_inode->i_mapping, index, NULL);
+		if (IS_ERR_OR_NULL(page)) {
+			pr_err("APEX_VBMETA: read_mapping_page failed: %ld\n",
+				PTR_ERR(page));
+			blkdev_put(bdev, FMODE_READ);
+			return;
+		}
+
+		kaddr = kmap(page);
+		/* Copy to a local buffer to release the page early */
+		{
+			char local_data[512];
+			memcpy(local_data, kaddr + ((sector & ((1 << (PAGE_SHIFT - SECTOR_SHIFT)) - 1)) * 512), 512);
+			kunmap(page);
+			put_page(page);
+			data = local_data;
+		}
+		pr_err("APEX_VBMETA: page cache read succeeded, dumping data:\n");
 	}
 
-	brelse(bh);
+	/* Print hexdump of first 64 bytes */
+	{
+		int i;
+		pr_err("APEX_VBMETA: first 64 bytes of vbmeta:\n");
+		for (i = 0; i < 64; i += 16) {
+			pr_err("APEX_VBMETA: %03x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+				i,
+				(unsigned char)data[i], (unsigned char)data[i+1],
+				(unsigned char)data[i+2], (unsigned char)data[i+3],
+				(unsigned char)data[i+4], (unsigned char)data[i+5],
+				(unsigned char)data[i+6], (unsigned char)data[i+7],
+				(unsigned char)data[i+8], (unsigned char)data[i+9],
+				(unsigned char)data[i+10], (unsigned char)data[i+11],
+				(unsigned char)data[i+12], (unsigned char)data[i+13],
+				(unsigned char)data[i+14], (unsigned char)data[i+15]);
+		}
+
+		/* Check AVB magic "AVB0" */
+		if (data[0] == 'A' && data[1] == 'V' && data[2] == 'B' && data[3] == '0') {
+			u32 hash_size;
+			hash_size = ((unsigned char)data[8] << 24) |
+				    ((unsigned char)data[9] << 16) |
+				    ((unsigned char)data[10] << 8) |
+				    ((unsigned char)data[11]);
+			pr_err("APEX_VBMETA: AVB magic OK! hash_size=%u (0x%x)\n",
+				hash_size, hash_size);
+		} else {
+			pr_err("APEX_VBMETA: AVB magic NOT found! first 4 bytes: %02x %02x %02x %02x\n",
+				(unsigned char)data[0], (unsigned char)data[1],
+				(unsigned char)data[2], (unsigned char)data[3]);
+		}
+	}
+
+	if (bh)
+		brelse(bh);
 	blkdev_put(bdev, FMODE_READ);
 }
 
