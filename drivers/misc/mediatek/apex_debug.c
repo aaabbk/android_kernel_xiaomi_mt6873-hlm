@@ -155,6 +155,136 @@ void apex_do_exit_hook(long code)
 }
 EXPORT_SYMBOL(apex_do_exit_hook);
 
+/* ============================================================
+ * Hook 3: signal delivery tracking via kprobe
+ *
+ * Captures fatal signals (SIGSEGV, SIGABRT, SIGKILL, etc.) delivered
+ * to userspace processes. This helps identify WHY a process crashed
+ * even without logcat/tombstone.
+ *
+ * do_send_sig_info(int sig, struct siginfo *info, struct task_struct *p, bool group)
+ *   - arg0 (regs->regs[0]): signal number
+ *   - arg2 (regs->regs[2]): target task_struct pointer
+ *
+ * force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+ *   - arg0 (regs->regs[0]): signal number
+ *   - arg2 (regs->regs[2]): target task_struct pointer
+ * ============================================================ */
+
+static int apex_is_signal_watch_target(struct task_struct *t)
+{
+	if (!t || (t->flags & PF_KTHREAD))
+		return 0;
+	/* Watch all HAL services and key processes */
+	if (!strncmp(t->comm, "android.hardwar", 15)) return 1;
+	if (!strncmp(t->comm, "vendor.xiaomi.h", 15)) return 1;
+	if (!strncmp(t->comm, "vendor.mediatek", 15)) return 1;
+	if (!strncmp(t->comm, "vendor.microtru", 15)) return 1;
+	if (!strncmp(t->comm, "surfaceflinger", 14)) return 1;
+	if (!strncmp(t->comm, "bootanim", 8)) return 1;
+	if (!strncmp(t->comm, "vold", 4)) return 1;
+	if (!strncmp(t->comm, "init", 4) && t->pid <= 2) return 1;
+	if (!strncmp(t->comm, "app_process", 11)) return 1;
+	if (!strncmp(t->comm, "system_server", 13)) return 1;
+	if (!strncmp(t->comm, "keystore2", 9)) return 1;
+	if (!strncmp(t->comm, "teei_daemon", 11)) return 1;
+	if (!strncmp(t->comm, "gpuservice", 10)) return 1;
+	return 0;
+}
+
+static const char *apex_sig_name(int sig)
+{
+	switch (sig) {
+	case 1:  return "SIGHUP";
+	case 2:  return "SIGINT";
+	case 3:  return "SIGQUIT";
+	case 4:  return "SIGILL";
+	case 5:  return "SIGTRAP";
+	case 6:  return "SIGABRT";
+	case 7:  return "SIGBUS";
+	case 8:  return "SIGFPE";
+	case 9:  return "SIGKILL";
+	case 10: return "SIGUSR1";
+	case 11: return "SIGSEGV";
+	case 12: return "SIGUSR2";
+	case 13: return "SIGPIPE";
+	case 14: return "SIGALRM";
+	case 15: return "SIGTERM";
+	case 17: return "SIGCHLD";
+	case 19: return "SIGSTOP";
+	case 24: return "SIGXCPU";
+	case 25: return "SIGXFSZ";
+	default: return "OTHER";
+	}
+}
+
+/* kprobe pre_handler for do_send_sig_info */
+static int apex_kp_do_send_sig_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	int sig;
+	struct task_struct *target;
+
+	sig = (int)regs->regs[0];
+	target = (struct task_struct *)regs->regs[2];
+
+	if (!apex_is_signal_watch_target(target))
+		return 0;
+
+	/* Only log fatal signals */
+	if (sig < 3 || sig == 17 || sig == 19)
+		return 0;
+
+	pr_err("APEX_SIG: do_send_sig pid=%d comm=%s sig=%d(%s) from pid=%d comm=%s\n",
+		target->pid, target->comm, sig, apex_sig_name(sig),
+		current->pid, current->comm);
+	return 0;
+}
+
+/* kprobe pre_handler for force_sig_info */
+static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	int sig;
+	struct task_struct *target;
+
+	sig = (int)regs->regs[0];
+	target = (struct task_struct *)regs->regs[2];
+
+	if (!apex_is_signal_watch_target(target))
+		return 0;
+
+	pr_err("APEX_SIG: force_sig pid=%d comm=%s sig=%d(%s) from pid=%d comm=%s\n",
+		target->pid, target->comm, sig, apex_sig_name(sig),
+		current->pid, current->comm);
+	return 0;
+}
+
+static struct kprobe apex_kp_do_send_sig = {
+	.symbol_name = "do_send_sig_info",
+	.pre_handler = apex_kp_do_send_sig_pre,
+};
+
+static struct kprobe apex_kp_force_sig = {
+	.symbol_name = "force_sig_info",
+	.pre_handler = apex_kp_force_sig_pre,
+};
+
+static void __init apex_register_signal_probes(void)
+{
+	int ret;
+
+	ret = register_kprobe(&apex_kp_do_send_sig);
+	if (ret)
+		pr_err("APEX_SIG: register_kprobe(do_send_sig_info) FAILED ret=%d\n", ret);
+	else
+		pr_err("APEX_SIG: register_kprobe(do_send_sig_info) OK\n");
+
+	ret = register_kprobe(&apex_kp_force_sig);
+	if (ret)
+		pr_err("APEX_SIG: register_kprobe(force_sig_info) FAILED ret=%d\n", ret);
+	else
+		pr_err("APEX_SIG: register_kprobe(force_sig_info) OK\n");
+}
+
 /* Forward declaration - apex_check_mounts() is defined later but used
  * by the watchdog timer callback. */
 static void apex_check_mounts(void);
@@ -1207,6 +1337,9 @@ static int __init apex_debug_init(void)
 
 	/* Register fscrypt kprobes for crypto failure diagnosis */
 	apex_register_fscrypt_probes();
+
+	/* Register signal delivery kprobes to capture process crash signals */
+	apex_register_signal_probes();
 
 	/* Start watchdog - first fire at 10s, then every 10s */
 	timer_setup(&apex_watchdog, apex_watchdog_fn, 0);
