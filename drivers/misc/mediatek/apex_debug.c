@@ -383,11 +383,13 @@ static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
 		}
 
 		if (crash_vma) {
+			const char *vma_name = (crash_vma->vm_file &&
+				crash_vma->vm_file->f_path.dentry) ?
+				(const char *)crash_vma->vm_file->f_path.dentry->d_name.name :
+				"[anon]";
 			pr_err("APEX_SIG:   [CRASH VMA] 0x%016lx-0x%016lx %08lx %s\n",
 				crash_vma->vm_start, crash_vma->vm_end,
-				crash_vma->vm_flags,
-				(crash_vma->vm_file && crash_vma->vm_file->f_path.dentry) ?
-					crash_vma->vm_file->f_path.dentry->d_name.name : "[anon]");
+				crash_vma->vm_flags, vma_name);
 			pr_err("APEX_SIG:   crash PC offset in VMA = 0x%llx\n",
 				crash_pc - crash_vma->vm_start);
 		} else {
@@ -400,7 +402,7 @@ static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
 		for (vma = target->mm->mmap; vma && vma_count < 80; vma = vma->vm_next) {
 			const char *name = "[anon]";
 			if (vma->vm_file && vma->vm_file->f_path.dentry)
-				name = vma->vm_file->f_path.dentry->d_name.name;
+				name = (const char *)vma->vm_file->f_path.dentry->d_name.name;
 			/* Only dump executable or file-backed VMAs */
 			if ((vma->vm_flags & VM_EXEC) || vma->vm_file) {
 				/* Mark the crash VMA with >>> */
