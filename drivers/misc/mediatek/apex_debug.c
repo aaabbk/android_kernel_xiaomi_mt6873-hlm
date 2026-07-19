@@ -225,6 +225,109 @@ static int __maybe_unused apex_is_watch_target(struct task_struct *task)
 	return 0;
 }
 
+/* ============================================================
+ * Surfaceflinger thread stack dump - ONE-TIME diagnostic
+ *
+ * When sf>=1 && ba==0 (surfaceflinger running but bootanim never
+ * started), dump kernel stack of surfaceflinger and ALL its threads
+ * to identify exactly which kernel function it is blocked in
+ * (binder_thread_read, futex_wait, io_uring, etc.)
+ *
+ * Runs EXACTLY ONCE (guarded by atomic flag).
+ * ============================================================ */
+static atomic_t apex_sf_dumped = ATOMIC_INIT(0);
+
+/* Enhanced stack dump for a single task - shows state + stack */
+static void apex_dump_task_full(struct task_struct *task)
+{
+	unsigned long entries[24];
+	struct stack_trace trace;
+	int i;
+
+	pr_err("APEX_SF: --- pid=%d tgid=%d comm=%s state=%lx flags=%x ---\n",
+		task->pid, task->tgid, task->comm,
+		task->state, task->flags);
+
+	/* Skip kernel threads - they have no userspace relevance here */
+	if (task->flags & PF_KTHREAD) {
+		pr_err("APEX_SF:   (kernel thread, skip)\n");
+		return;
+	}
+
+	trace.nr_entries = 0;
+	trace.entries = entries;
+	trace.max_entries = 24;
+	trace.skip = 0;
+
+	save_stack_trace_tsk(task, &trace);
+
+	if (trace.nr_entries == 0) {
+		pr_err("APEX_SF:   (no stack trace available - task may be running)\n");
+		return;
+	}
+
+	for (i = 0; i < trace.nr_entries; i++) {
+		pr_err("APEX_SF:   [%02d] %pS\n", i, (void *)entries[i]);
+	}
+}
+
+static void apex_dump_sf_stacks(void)
+{
+	struct task_struct *task, *thread;
+
+	/* Guard: only run once */
+	if (atomic_xchg(&apex_sf_dumped, 1))
+		return;
+
+	pr_err("APEX_SF: === surfaceflinger thread stack dump (one-shot) ===\n");
+	pr_err("APEX_SF: jiffies=%lu t=%ds\n",
+		jiffies, (int)(jiffies_to_msecs(jiffies) / 1000));
+
+	rcu_read_lock();
+
+	/* Iterate all processes to find surfaceflinger */
+	for_each_process(task) {
+		if (strncmp(task->comm, "surfaceflinger", 14))
+			continue;
+
+		pr_err("APEX_SF: >>> surfaceflinger main process pid=%d state=%lx <<<\n",
+			task->pid, task->state);
+		apex_dump_task_full(task);
+
+		/* Iterate all threads in the thread group */
+		for_each_thread(task, thread) {
+			if (thread == task)
+				continue;  /* already dumped main */
+			pr_err("APEX_SF: >>> thread pid=%d comm=%s <<<\n",
+				thread->pid, thread->comm);
+			apex_dump_task_full(thread);
+		}
+	}
+
+	/* Also dump app_process/zygote threads for context */
+	for_each_process(task) {
+		if (strncmp(task->comm, "app_process", 11) &&
+		    strncmp(task->comm, "main", 4))
+			continue;
+
+		/* Only dump if parent is init or zygote (avoid flooding) */
+		if (!task->parent)
+			continue;
+		if (strncmp(task->parent->comm, "init", 4) &&
+		    strncmp(task->parent->comm, "zygote", 6) &&
+		    strncmp(task->parent->comm, "main", 4))
+			continue;
+
+		pr_err("APEX_SF: >>> zygote-related pid=%d comm=%s state=%lx <<<\n",
+			task->pid, task->comm, task->state);
+		apex_dump_task_full(task);
+	}
+
+	rcu_read_unlock();
+
+	pr_err("APEX_SF: === stack dump done ===\n");
+}
+
 static void apex_watchdog_fn(struct timer_list *t)
 {
 	struct task_struct *task;
@@ -251,6 +354,11 @@ static void apex_watchdog_fn(struct timer_list *t)
 		apex_dump_count = 1;
 		schedule_work(&apex_mount_work);
 	}
+
+	/* Surfaceflinger stuck: sf alive but bootanim never started.
+	 * Dump stacks ONCE to identify blocking point. */
+	if (sf >= 1 && ba == 0)
+		apex_dump_sf_stacks();
 
 	mod_timer(&apex_watchdog, jiffies + 10 * HZ);
 }
