@@ -362,6 +362,61 @@ static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
 			(esr >> 26) & 0x3f, (esr >> 25) & 0x1, esr & 0x1ffffff);
 	}
 
+	/* Dump the VMA (virtual memory area) containing the crash PC.
+	 * This tells us which .so library the crash is in.
+	 * We iterate the target's mm->mmap VMA list and find the one
+	 * containing target_regs->pc. Also dump a few VMAs around it
+	 * for context (libraries loaded nearby). */
+	if (target->mm) {
+		struct vm_area_struct *vma;
+		u64 crash_pc = target_regs->pc;
+		int vma_count = 0;
+		struct vm_area_struct *crash_vma = NULL;
+
+		/* Find the VMA containing crash_pc */
+		down_read(&target->mm->mmap_sem);
+		for (vma = target->mm->mmap; vma; vma = vma->vm_next) {
+			if (crash_pc >= vma->vm_start && crash_pc < vma->vm_end) {
+				crash_vma = vma;
+				break;
+			}
+		}
+
+		if (crash_vma) {
+			pr_err("APEX_SIG:   [CRASH VMA] 0x%016lx-0x%016lx %08lx %s\n",
+				crash_vma->vm_start, crash_vma->vm_end,
+				crash_vma->vm_flags,
+				(crash_vma->vm_file && crash_vma->vm_file->f_path.dentry) ?
+					crash_vma->vm_file->f_path.dentry->d_name.name : "[anon]");
+			pr_err("APEX_SIG:   crash PC offset in VMA = 0x%llx\n",
+				crash_pc - crash_vma->vm_start);
+		} else {
+			pr_err("APEX_SIG:   [CRASH PC 0x%llx NOT in any VMA]\n", crash_pc);
+		}
+
+		/* Dump ALL executable VMAs (libraries) for full picture.
+		 * Limit to first 80 to avoid log flooding. */
+		pr_err("APEX_SIG:   === executable VMAs (libraries) ===\n");
+		for (vma = target->mm->mmap; vma && vma_count < 80; vma = vma->vm_next) {
+			const char *name = "[anon]";
+			if (vma->vm_file && vma->vm_file->f_path.dentry)
+				name = vma->vm_file->f_path.dentry->d_name.name;
+			/* Only dump executable or file-backed VMAs */
+			if ((vma->vm_flags & VM_EXEC) || vma->vm_file) {
+				/* Mark the crash VMA with >>> */
+				pr_err("APEX_SIG:   %s 0x%016lx-0x%016lx %08lx %s\n",
+					(vma == crash_vma) ? ">>>" : "   ",
+					vma->vm_start, vma->vm_end,
+					vma->vm_flags, name);
+				vma_count++;
+			}
+		}
+		pr_err("APEX_SIG:   === %d executable/file VMAs dumped ===\n", vma_count);
+		up_read(&target->mm->mmap_sem);
+	} else {
+		pr_err("APEX_SIG:   target->mm=NULL (kernel thread or exiting)\n");
+	}
+
 	pr_err("APEX_SIG: === crash context dump done ===\n");
 	return 0;
 }
