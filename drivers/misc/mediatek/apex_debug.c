@@ -29,6 +29,7 @@
 #include <linux/namei.h>
 #include <linux/mount.h>
 #include <linux/workqueue.h>
+#include <linux/kprobes.h>
 #include <asm/ptrace.h>
 #include <mt-plat/mtk_boot.h>
 
@@ -649,6 +650,171 @@ static void apex_dump_cmdline(void)
 }
 
 /* ============================================================
+ * fscrypt kprobe tracing - diagnose vold crypto failures
+ * ============================================================ */
+
+/* fscrypt_ioctl is the main entry point for all fscrypt ioctls.
+ * Signature: int fscrypt_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+ * arm64 regs: x0=filp, x1=cmd, x2=arg
+ */
+static int apex_kp_fscrypt_ioctl_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	unsigned int cmd = (unsigned int)regs->regs[1];
+
+	pr_err("APEX_FSCRYPT: fscrypt_ioctl ENTER cmd=0x%08x\n", cmd);
+	return 0;
+}
+
+static struct kprobe apex_kp_fscrypt_ioctl = {
+	.symbol_name = "fscrypt_ioctl",
+	.pre_handler = apex_kp_fscrypt_ioctl_pre,
+};
+
+/* fscrypt_ioctl_add_key - installs an fscrypt master key
+ * This is what vold calls to install the user key.
+ * If this fails, ro.crypto.state won't be set.
+ */
+static int apex_kp_add_key_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_ioctl_add_key ENTER\n");
+	return 0;
+}
+
+static int apex_kp_add_key_ret(struct kretprobe_instance *ri,
+			       struct pt_regs *regs)
+{
+	int retval = (int)regs_return_value(regs);
+	pr_err("APEX_FSCRYPT: fscrypt_ioctl_add_key RETURN retval=%d\n",
+	       retval);
+	return 0;
+}
+
+static struct kprobe apex_kp_add_key = {
+	.symbol_name = "fscrypt_ioctl_add_key",
+	.pre_handler = apex_kp_add_key_pre,
+};
+
+static struct kretprobe apex_krp_add_key = {
+	.handler = apex_kp_add_key_ret,
+	.kp.symbol_name = "fscrypt_ioctl_add_key",
+};
+
+/* fscrypt_add_key - lower-level key addition function */
+static int apex_kp_fscrypt_add_key_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_add_key ENTER\n");
+	return 0;
+}
+
+static struct kprobe apex_kp_fscrypt_add_key = {
+	.symbol_name = "fscrypt_add_key",
+	.pre_handler = apex_kp_fscrypt_add_key_pre,
+};
+
+/* fscrypt_setup_encryption_key - sets up key for an encrypted inode */
+static int apex_kp_setup_key_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_setup_encryption_key ENTER\n");
+	return 0;
+}
+
+static struct kprobe apex_kp_setup_key = {
+	.symbol_name = "fscrypt_setup_encryption_key",
+	.pre_handler = apex_kp_setup_key_pre,
+};
+
+/* fscrypt_get_encryption_info - retrieves encryption info for inode */
+static int apex_kp_get_enc_info_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info ENTER\n");
+	return 0;
+}
+
+static int apex_kp_get_enc_info_ret(struct kretprobe_instance *ri,
+				    struct pt_regs *regs)
+{
+	int retval = (int)regs_return_value(regs);
+	pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info RETURN retval=%d\n",
+	       retval);
+	return 0;
+}
+
+static struct kprobe apex_kp_get_enc_info = {
+	.symbol_name = "fscrypt_get_encryption_info",
+	.pre_handler = apex_kp_get_enc_info_pre,
+};
+
+static struct kretprobe apex_krp_get_enc_info = {
+	.handler = apex_kp_get_enc_info_ret,
+	.kp.symbol_name = "fscrypt_get_encryption_info",
+};
+
+/* fscrypt_prepare_lookup - prepare lookup with encryption */
+static int apex_kp_prep_lookup_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_prepare_lookup ENTER\n");
+	return 0;
+}
+
+static struct kprobe apex_kp_prep_lookup = {
+	.symbol_name = "fscrypt_prepare_lookup",
+	.pre_handler = apex_kp_prep_lookup_pre,
+};
+
+/* fscrypt_ioctl_set_policy - sets encryption policy on directory */
+static int apex_kp_set_policy_pre(struct kprobe *p, struct pt_regs *regs)
+{
+	pr_err("APEX_FSCRYPT: fscrypt_ioctl_set_policy ENTER\n");
+	return 0;
+}
+
+static struct kprobe apex_kp_set_policy = {
+	.symbol_name = "fscrypt_ioctl_set_policy",
+	.pre_handler = apex_kp_set_policy_pre,
+};
+
+/* Register all kprobes, print error if symbol not found */
+static void __init apex_register_fscrypt_probes(void)
+{
+	int ret;
+
+#define REGISTER_KPROBE(kp) \
+	do { \
+		ret = register_kprobe(kp); \
+		if (ret) \
+			pr_err("APEX_FSCRYPT: register_kprobe(%s) FAILED ret=%d\n", \
+			       (kp)->symbol_name, ret); \
+		else \
+			pr_err("APEX_FSCRYPT: register_kprobe(%s) OK\n", \
+			       (kp)->symbol_name); \
+	} while (0)
+
+#define REGISTER_KRETPROBE(krp) \
+	do { \
+		ret = register_kretprobe(krp); \
+		if (ret) \
+			pr_err("APEX_FSCRYPT: register_kretprobe(%s) FAILED ret=%d\n", \
+			       (krp)->kp.symbol_name, ret); \
+		else \
+			pr_err("APEX_FSCRYPT: register_kretprobe(%s) OK\n", \
+			       (krp)->kp.symbol_name); \
+	} while (0)
+
+	REGISTER_KPROBE(&apex_kp_fscrypt_ioctl);
+	REGISTER_KPROBE(&apex_kp_add_key);
+	REGISTER_KRETPROBE(&apex_krp_add_key);
+	REGISTER_KPROBE(&apex_kp_fscrypt_add_key);
+	REGISTER_KPROBE(&apex_kp_setup_key);
+	REGISTER_KPROBE(&apex_kp_get_enc_info);
+	REGISTER_KRETPROBE(&apex_krp_get_enc_info);
+	REGISTER_KPROBE(&apex_kp_prep_lookup);
+	REGISTER_KPROBE(&apex_kp_set_policy);
+
+#undef REGISTER_KPROBE
+#undef REGISTER_KRETPROBE
+}
+
+/* ============================================================
  * Init
  * ============================================================ */
 static int __init apex_debug_init(void)
@@ -660,6 +826,9 @@ static int __init apex_debug_init(void)
 
 	/* Initialize workqueue for mount checks from timer context */
 	INIT_WORK(&apex_mount_work, apex_mount_work_fn);
+
+	/* Register fscrypt kprobes for crypto failure diagnosis */
+	apex_register_fscrypt_probes();
 
 	/* Start watchdog - first fire at 10s, then every 10s */
 	timer_setup(&apex_watchdog, apex_watchdog_fn, 0);
