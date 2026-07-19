@@ -133,7 +133,13 @@ void apex_do_exit_hook(long code)
 	    strncmp(t->comm, "secilc", 6) &&
 	    strncmp(t->comm, "apexd", 5) &&
 	    strncmp(t->comm, "linkerconfig", 12) &&
-	    strncmp(t->comm, "keystore2", 9))
+	    strncmp(t->comm, "keystore2", 9) &&
+	    strncmp(t->comm, "android.hardwar", 15) &&  /* HAL services */
+	    strncmp(t->comm, "vendor.xiaomi.h", 15) &&  /* xiaomi HAL */
+	    strncmp(t->comm, "vendor.mediatek", 15) &&  /* MTK HAL */
+	    strncmp(t->comm, "vendor.microtru", 15) &&  /* MicroTrust */
+	    strncmp(t->comm, "gpuservice", 10) &&
+	    strncmp(t->comm, "teei_daemon", 11))
 		return;
 
 	if (code > 0 && code < 0x80) {
@@ -1100,6 +1106,87 @@ static void apex_check_tee_status(void)
 }
 
 /* ============================================================
+ * Display driver status check - ONE-TIME diagnostic
+ *
+ * Checks /dev/fb0, /dev/dri/card0, /dev/dri/renderD128
+ * Dumps LCM/DRM related kernel symbols
+ * ============================================================ */
+static atomic_t apex_display_checked = ATOMIC_INIT(0);
+
+static void apex_check_display_status(void)
+{
+	struct path p;
+	int err;
+	unsigned long addr;
+
+	if (atomic_xchg(&apex_display_checked, 1))
+		return;
+
+	pr_err("APEX_DISP: === display driver status check (one-shot) ===\n");
+
+	/* Device nodes */
+	err = kern_path("/dev/fb0", 0, &p);
+	if (err)
+		pr_err("APEX_DISP: /dev/fb0 NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_DISP: /dev/fb0 EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/dev/dri/card0", 0, &p);
+	if (err)
+		pr_err("APEX_DISP: /dev/dri/card0 NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_DISP: /dev/dri/card0 EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/dev/dri/renderD128", 0, &p);
+	if (err)
+		pr_err("APEX_DISP: /dev/dri/renderD128 NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_DISP: /dev/dri/renderD128 EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/dev/graphics/fb0", 0, &p);
+	if (err)
+		pr_err("APEX_DISP: /dev/graphics/fb0 NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_DISP: /dev/graphics/fb0 EXISTS\n");
+		path_put(&p);
+	}
+
+	/* DRM/MTK display kernel symbols */
+	addr = kallsyms_lookup_name("mtk_drm_init");
+	pr_err("APEX_DISP: kallsyms mtk_drm_init=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	addr = kallsyms_lookup_name("mtk_drm_probe");
+	pr_err("APEX_DISP: kallsyms mtk_drm_probe=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	addr = kallsyms_lookup_name("lcm_fps_ctx_init");
+	pr_err("APEX_DISP: kallsyms lcm_fps_ctx_init=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	addr = kallsyms_lookup_name("mtk_fb_init");
+	pr_err("APEX_DISP: kallsyms mtk_fb_init=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	addr = kallsyms_lookup_name("disp_init_hal");
+	pr_err("APEX_DISP: kallsyms disp_init_hal=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	/* DRM device class - check if DRM subsystem registered */
+	addr = kallsyms_lookup_name("drm_class");
+	pr_err("APEX_DISP: kallsyms drm_class=%pS (addr=%lx)\n",
+	       (void *)addr, addr);
+
+	pr_err("APEX_DISP: === display status check done ===\n");
+}
+
+/* ============================================================
  * Init
  * ============================================================ */
 static int __init apex_debug_init(void)
@@ -1111,6 +1198,9 @@ static int __init apex_debug_init(void)
 
 	/* One-shot MicroTrust TEE driver status check */
 	apex_check_tee_status();
+
+	/* One-shot display driver status check */
+	apex_check_display_status();
 
 	/* Initialize workqueue for mount checks from timer context */
 	INIT_WORK(&apex_mount_work, apex_mount_work_fn);
