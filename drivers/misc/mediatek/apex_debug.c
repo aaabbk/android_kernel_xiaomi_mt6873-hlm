@@ -723,10 +723,18 @@ static struct kprobe apex_kp_setup_key = {
 	.pre_handler = apex_kp_setup_key_pre,
 };
 
-/* fscrypt_get_encryption_info - retrieves encryption info for inode */
+/* fscrypt_get_encryption_info - retrieves encryption info for inode
+ * NOTE: This function is called extremely frequently (thousands of times).
+ * Only log the FIRST call and errors to avoid flooding the log buffer.
+ */
+static atomic_t apex_get_enc_info_count = ATOMIC_INIT(0);
+
 static int apex_kp_get_enc_info_pre(struct kprobe *p, struct pt_regs *regs)
 {
-	pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info ENTER\n");
+	int count = atomic_inc_return(&apex_get_enc_info_count);
+	if (count <= 3)
+		pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info ENTER (call #%d)\n",
+		       count);
 	return 0;
 }
 
@@ -734,8 +742,10 @@ static int apex_kp_get_enc_info_ret(struct kretprobe_instance *ri,
 				    struct pt_regs *regs)
 {
 	int retval = (int)regs_return_value(regs);
-	pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info RETURN retval=%d\n",
-	       retval);
+	int count = atomic_read(&apex_get_enc_info_count);
+	if (count <= 3 || retval < 0)
+		pr_err("APEX_FSCRYPT: fscrypt_get_encryption_info RETURN retval=%d (call #%d)\n",
+		       retval, count);
 	return 0;
 }
 
@@ -749,10 +759,17 @@ static struct kretprobe apex_krp_get_enc_info = {
 	.kp.symbol_name = "fscrypt_get_encryption_info",
 };
 
-/* fscrypt_prepare_lookup - prepare lookup with encryption */
+/* fscrypt_prepare_lookup - prepare lookup with encryption
+ * NOTE: Also called very frequently, rate-limit to first 3 calls.
+ */
+static atomic_t apex_prep_lookup_count = ATOMIC_INIT(0);
+
 static int apex_kp_prep_lookup_pre(struct kprobe *p, struct pt_regs *regs)
 {
-	pr_err("APEX_FSCRYPT: fscrypt_prepare_lookup ENTER\n");
+	int count = atomic_inc_return(&apex_prep_lookup_count);
+	if (count <= 3)
+		pr_err("APEX_FSCRYPT: fscrypt_prepare_lookup ENTER (call #%d)\n",
+		       count);
 	return 0;
 }
 
