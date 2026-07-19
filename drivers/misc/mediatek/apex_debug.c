@@ -271,6 +271,26 @@ static void apex_dump_task_full(struct task_struct *task)
 	}
 }
 
+/* Check if process is graphics-related (HWC, allocator, displayfeature, etc.) */
+static int apex_is_graphics_process(struct task_struct *task)
+{
+	/* Graphics HAL services have long comm names truncated to 15 chars.
+	 * Match by prefix patterns seen in ramoops logs. */
+	if (!strncmp(task->comm, "android.hardwar", 15))
+		return 1;  /* android.hardware.* services */
+	if (!strncmp(task->comm, "surfaceflinger", 14))
+		return 1;
+	if (!strncmp(task->comm, "vendor.xiaomi.h", 15))
+		return 1;  /* vendor.xiaomi.* services */
+	if (!strncmp(task->comm, "vendor.mediatek.", 16))
+		return 1;  /* vendor.mediatek.* services - won't match (16 chars) */
+	if (!strncmp(task->comm, "vendor.mediatek", 15))
+		return 1;  /* vendor.mediatek* services */
+	if (!strncmp(task->comm, "gpuservice", 10))
+		return 1;
+	return 0;
+}
+
 static void apex_dump_sf_stacks(void)
 {
 	struct task_struct *task, *thread;
@@ -279,13 +299,13 @@ static void apex_dump_sf_stacks(void)
 	if (atomic_xchg(&apex_sf_dumped, 1))
 		return;
 
-	pr_err("APEX_SF: === surfaceflinger thread stack dump (one-shot) ===\n");
+	pr_err("APEX_SF: === graphics process stack dump (one-shot) ===\n");
 	pr_err("APEX_SF: jiffies=%lu t=%ds\n",
 		jiffies, (int)(jiffies_to_msecs(jiffies) / 1000));
 
 	rcu_read_lock();
 
-	/* Iterate all processes to find surfaceflinger */
+	/* Phase 1: dump surfaceflinger (main suspect) */
 	for_each_process(task) {
 		if (strncmp(task->comm, "surfaceflinger", 14))
 			continue;
@@ -294,33 +314,40 @@ static void apex_dump_sf_stacks(void)
 			task->pid, task->state);
 		apex_dump_task_full(task);
 
-		/* Iterate all threads in the thread group */
 		for_each_thread(task, thread) {
 			if (thread == task)
-				continue;  /* already dumped main */
+				continue;
 			pr_err("APEX_SF: >>> thread pid=%d comm=%s <<<\n",
 				thread->pid, thread->comm);
 			apex_dump_task_full(thread);
 		}
 	}
 
-	/* Also dump app_process/zygote threads for context */
+	/* Phase 2: dump ALL graphics-related HAL services
+	 * (HWC composer, allocator, displayfeature, gpuservice, etc.)
+	 * These are the binder endpoints surfaceflinger talks to.
+	 * If surfaceflinger is blocked in binder_ioctl_write_read,
+	 * the blocking endpoint is likely one of these. */
 	for_each_process(task) {
-		if (strncmp(task->comm, "app_process", 11) &&
-		    strncmp(task->comm, "main", 4))
+		/* Skip surfaceflinger - already dumped above */
+		if (!strncmp(task->comm, "surfaceflinger", 14))
 			continue;
 
-		/* Only dump if parent is init or zygote (avoid flooding) */
-		if (!task->parent)
-			continue;
-		if (strncmp(task->parent->comm, "init", 4) &&
-		    strncmp(task->parent->comm, "zygote", 6) &&
-		    strncmp(task->parent->comm, "main", 4))
+		if (!apex_is_graphics_process(task))
 			continue;
 
-		pr_err("APEX_SF: >>> zygote-related pid=%d comm=%s state=%lx <<<\n",
+		pr_err("APEX_SF: >>> graphics HAL pid=%d comm=%s state=%lx <<<\n",
 			task->pid, task->comm, task->state);
 		apex_dump_task_full(task);
+
+		/* Dump all threads in this HAL service */
+		for_each_thread(task, thread) {
+			if (thread == task)
+				continue;
+			pr_err("APEX_SF: >>> HAL thread pid=%d comm=%s <<<\n",
+				thread->pid, thread->comm);
+			apex_dump_task_full(thread);
+		}
 	}
 
 	rcu_read_unlock();
