@@ -30,6 +30,7 @@
 #include <linux/mount.h>
 #include <linux/workqueue.h>
 #include <linux/kprobes.h>
+#include <linux/of.h>
 #include <asm/ptrace.h>
 #include <mt-plat/mtk_boot.h>
 
@@ -832,6 +833,138 @@ static void __init apex_register_fscrypt_probes(void)
 }
 
 /* ============================================================
+ * MicroTrust TEE driver status check - ONE-TIME diagnostic
+ *
+ * Based on source analysis of drivers/misc/mediatek/teei/400/:
+ *   - teei_client_main.c: module_init + platform_driver,
+ *     compatible="microtrust,utos"
+ *   - teei_log_thread: kernel thread started in teei_probe()
+ *   - TEEI_CONFIG_IOCTL_INIT_TEEI: ioctl that triggers real TEE OS load
+ *   - SMC 0xB2000007: routed by ATF to MicroTrust Soter
+ *
+ * Official 4.14.186 kernel shows teei_log_thread + [TZ_LOG] at t=11.7s.
+ * Self-compiled 4.14.336 has NO TEE logs - this check identifies why.
+ *
+ * All checks run EXACTLY ONCE (guarded by atomic flag).
+ * ============================================================ */
+static atomic_t apex_tee_checked = ATOMIC_INIT(0);
+
+static void apex_check_tee_status(void)
+{
+	struct task_struct *task;
+	struct path p;
+	int err;
+
+	/* Guard: only run once */
+	if (atomic_xchg(&apex_tee_checked, 1))
+		return;
+
+	pr_err("APEX_TEE: === MicroTrust TEE status check (one-shot) ===\n");
+
+	/* 1. Compile-time Kconfig macros - verified against defconfig */
+#ifdef CONFIG_MICROTRUST_TEE_SUPPORT
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TEE_SUPPORT=y (compiled in)\n");
+#else
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TEE_SUPPORT NOT set (driver NOT compiled!)\n");
+#endif
+
+#ifdef CONFIG_MICROTRUST_TEE_VERSION
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TEE_VERSION=\"%s\"\n",
+	       CONFIG_MICROTRUST_TEE_VERSION);
+#else
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TEE_VERSION NOT set\n");
+#endif
+
+#ifdef CONFIG_MICROTRUST_TZ_DRIVER
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TZ_DRIVER=y\n");
+#else
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_TZ_DRIVER NOT set\n");
+#endif
+
+#ifdef CONFIG_MICROTRUST_KEYMASTER_DRIVER
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_KEYMASTER_DRIVER=y\n");
+#else
+	pr_err("APEX_TEE: CONFIG_MICROTRUST_KEYMASTER_DRIVER NOT set\n");
+#endif
+
+	/* 2. Device tree node - teei_driver matches "microtrust,utos" */
+	{
+		struct device_node *np;
+
+		np = of_find_compatible_node(NULL, NULL, "microtrust,utos");
+		if (np) {
+			pr_err("APEX_TEE: DT node 'microtrust,utos' FOUND name=%s\n",
+			       np->name ? np->name : "(null)");
+			of_node_put(np);
+		} else {
+			pr_err("APEX_TEE: DT node 'microtrust,utos' NOT FOUND\n");
+		}
+	}
+
+	/* 3. Kernel symbols - verify teei driver actually linked */
+	{
+		unsigned long addr;
+
+		addr = kallsyms_lookup_name("teei_probe");
+		pr_err("APEX_TEE: kallsyms teei_probe=%pS (addr=%lx)\n",
+		       (void *)addr, addr);
+
+		addr = kallsyms_lookup_name("teei_log_thread");
+		pr_err("APEX_TEE: kallsyms teei_log_thread=%pS (addr=%lx)\n",
+		       (void *)addr, addr);
+
+		addr = kallsyms_lookup_name("teei_init");
+		pr_err("APEX_TEE: kallsyms teei_init=%pS (addr=%lx)\n",
+		       (void *)addr, addr);
+	}
+
+	/* 4. Device nodes created by teei driver */
+	err = kern_path("/dev/tz", 0, &p);
+	if (err)
+		pr_err("APEX_TEE: /dev/tz NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_TEE: /dev/tz EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/dev/teei_config", 0, &p);
+	if (err)
+		pr_err("APEX_TEE: /dev/teei_config NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_TEE: /dev/teei_config EXISTS\n");
+		path_put(&p);
+	}
+
+	err = kern_path("/dev/teei_client", 0, &p);
+	if (err)
+		pr_err("APEX_TEE: /dev/teei_client NOT FOUND (err=%d)\n", err);
+	else {
+		pr_err("APEX_TEE: /dev/teei_client EXISTS\n");
+		path_put(&p);
+	}
+
+	/* 5. Kernel threads - teei_log_thread should exist if probe ran */
+	rcu_read_lock();
+	for_each_process(task) {
+		if (!strncmp(task->comm, "teei_log_thread", 15)) {
+			pr_err("APEX_TEE: thread 'teei_log_thread' FOUND pid=%d state=%ld\n",
+			       task->pid, task->state);
+		}
+		if (!strncmp(task->comm, "teei_daemon", 11)) {
+			pr_err("APEX_TEE: thread 'teei_daemon' FOUND pid=%d state=%ld\n",
+			       task->pid, task->state);
+		}
+		if (!strncmp(task->comm, "teei", 4)) {
+			pr_err("APEX_TEE: thread '%s' FOUND pid=%d state=%ld\n",
+			       task->comm, task->pid, task->state);
+		}
+	}
+	rcu_read_unlock();
+
+	pr_err("APEX_TEE: === TEE status check done ===\n");
+}
+
+/* ============================================================
  * Init
  * ============================================================ */
 static int __init apex_debug_init(void)
@@ -840,6 +973,9 @@ static int __init apex_debug_init(void)
 
 	/* Dump kernel command line only - minimal startup info */
 	apex_dump_cmdline();
+
+	/* One-shot MicroTrust TEE driver status check */
+	apex_check_tee_status();
 
 	/* Initialize workqueue for mount checks from timer context */
 	INIT_WORK(&apex_mount_work, apex_mount_work_fn);
