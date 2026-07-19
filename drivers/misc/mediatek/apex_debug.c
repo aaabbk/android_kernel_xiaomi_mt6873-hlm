@@ -31,6 +31,7 @@
 #include <linux/workqueue.h>
 #include <linux/kprobes.h>
 #include <linux/of.h>
+#include <linux/signal_types.h>
 #include <asm/ptrace.h>
 #include <mt-plat/mtk_boot.h>
 
@@ -240,21 +241,128 @@ static int apex_kp_do_send_sig_pre(struct kprobe *p, struct pt_regs *regs)
 	return 0;
 }
 
-/* kprobe pre_handler for force_sig_info */
+/* One-shot guard: dump full crash context only once per process.
+ * Avoids log flooding when SIGSEGV loops in ART runtime. */
+static atomic_t apex_segv_dumped = ATOMIC_INIT(0);
+
+/* kprobe pre_handler for force_sig_info
+ *
+ * force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+ *   arg0 (regs->regs[0]): signal number
+ *   arg1 (regs->regs[1]): siginfo pointer (may be SEND_SIG_PRIV/FORCED)
+ *   arg2 (regs->regs[2]): target task_struct pointer
+ *
+ * For SIGSEGV/SIGBUS/SIGFPE/SIGILL, we dump:
+ *   - si_code (SEGV_MAPERR=1, SEGV_ACCERR=2)
+ *   - si_addr (faulting virtual address)
+ *   - target's user-mode pt_regs (PC, LR, SP, x0-x29)
+ *   - FAR_EL1 / ESR_EL1 (if target == current)
+ */
 static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
 {
 	int sig;
+	struct siginfo *info;
 	struct task_struct *target;
+	struct pt_regs *target_regs;
+	int first_crash;
 
 	sig = (int)regs->regs[0];
+	info = (struct siginfo *)regs->regs[1];
 	target = (struct task_struct *)regs->regs[2];
 
 	if (!apex_is_signal_watch_target(target))
 		return 0;
 
+	/* Always log the signal (compact, one line) */
 	pr_err("APEX_SIG: force_sig pid=%d comm=%s sig=%d(%s) from pid=%d comm=%s\n",
 		target->pid, target->comm, sig, apex_sig_name(sig),
 		current->pid, current->comm);
+
+	/* For SIGSEGV/SIGBUS/SIGFPE/SIGILL, dump full crash context ONCE.
+	 * ART often loops on the same SIGSEGV, so we only dump details
+	 * the first time to avoid log flooding. */
+	if (sig != 11 && sig != 7 && sig != 8 && sig != 4 && sig != 5)
+		return 0;
+
+	first_crash = atomic_cmpxchg(&apex_segv_dumped, 0, 1);
+	if (first_crash)
+		return 0;  /* already dumped details for this crash */
+
+	pr_err("APEX_SIG: === CRASH CONTEXT DUMP (one-shot) ===\n");
+
+	/* si_code and si_addr from siginfo (guard against sentinel values) */
+	if (info && info != SEND_SIG_PRIV && info != SEND_SIG_FORCED) {
+		pr_err("APEX_SIG:   si_code=0x%x si_addr=0x%llx\n",
+			info->si_code,
+			(unsigned long long)info->si_addr);
+		/* Decode si_code for SIGSEGV */
+		if (sig == 11) {
+			switch (info->si_code) {
+			case 1: pr_err("APEX_SIG:   SEGV_MAPERR (address not mapped)\n"); break;
+			case 2: pr_err("APEX_SIG:   SEGV_ACCERR (invalid permissions)\n"); break;
+			default: pr_err("APEX_SIG:   unknown si_code=%d\n", info->si_code); break;
+			}
+		}
+	} else {
+		pr_err("APEX_SIG:   info=%p (sentinel, no si_addr)\n", info);
+	}
+
+	/* Dump target's user-mode pt_regs — THIS is the real crash PC.
+	 * task_pt_regs() computes from the top of the kernel stack. */
+	target_regs = task_pt_regs(target);
+	if (!target_regs) {
+		pr_err("APEX_SIG:   target_regs=NULL (cannot dump)\n");
+		return 0;
+	}
+
+	if (user_mode(target_regs)) {
+		pr_err("APEX_SIG:   PC=0x%llx SP=0x%llx pstate=0x%llx [USER]\n",
+			target_regs->pc, target_regs->sp, target_regs->pstate);
+	} else {
+		pr_err("APEX_SIG:   PC=0x%llx [KERNEL, target not in userspace]\n",
+			target_regs->pc);
+	}
+
+	/* Dump key registers for backtrace analysis:
+	 * x0-x7: argument registers
+	 * x16-x17: intra-procedure-call scratch (IP0/IP1)
+	 * x29: frame pointer (FP)
+	 * x30: link register (LR) — return address
+	 */
+	pr_err("APEX_SIG:   x0=%016llx x1=%016llx x2=%016llx x3=%016llx\n",
+		target_regs->regs[0], target_regs->regs[1],
+		target_regs->regs[2], target_regs->regs[3]);
+	pr_err("APEX_SIG:   x4=%016llx x5=%016llx x6=%016llx x7=%016llx\n",
+		target_regs->regs[4], target_regs->regs[5],
+		target_regs->regs[6], target_regs->regs[7]);
+	pr_err("APEX_SIG:   x8=%016llx x9=%016llx x16=%016llx x17=%016llx\n",
+		target_regs->regs[8], target_regs->regs[9],
+		target_regs->regs[16], target_regs->regs[17]);
+	pr_err("APEX_SIG:   x18=%016llx x19=%016llx x20=%016llx x21=%016llx\n",
+		target_regs->regs[18], target_regs->regs[19],
+		target_regs->regs[20], target_regs->regs[21]);
+	pr_err("APEX_SIG:   x22=%016llx x23=%016llx x24=%016llx x25=%016llx\n",
+		target_regs->regs[22], target_regs->regs[23],
+		target_regs->regs[24], target_regs->regs[25]);
+	pr_err("APEX_SIG:   x26=%016llx x27=%016llx x28=%016llx FP=%016llx LR=%016llx\n",
+		target_regs->regs[26], target_regs->regs[27],
+		target_regs->regs[28], target_regs->regs[29],
+		target_regs->regs[30]);
+
+	/* If target == current, read hardware fault registers directly.
+	 * FAR_EL1 = Fault Address Register (the address that caused the fault)
+	 * ESR_EL1 = Exception Syndrome Register (contains EC, ISS, IL fields) */
+	if (target == current) {
+		u64 far, esr;
+		asm volatile("mrs %0, far_el1" : "=r"(far));
+		asm volatile("mrs %0, esr_el1" : "=r"(esr));
+		pr_err("APEX_SIG:   FAR_EL1=0x%llx ESR_EL1=0x%llx\n", far, esr);
+		/* Decode ESR_EL1 EC field (bits 31:26) */
+		pr_err("APEX_SIG:   EC=0x%llx IL=%llx ISS=0x%05llx\n",
+			(esr >> 26) & 0x3f, (esr >> 25) & 0x1, esr & 0x1ffffff);
+	}
+
+	pr_err("APEX_SIG: === crash context dump done ===\n");
 	return 0;
 }
 
