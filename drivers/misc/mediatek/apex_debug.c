@@ -505,6 +505,7 @@ static struct work_struct apex_mount_work;
 
 /* Delayed work for second TEE status check (after ueventd creates /dev nodes) */
 static struct delayed_work apex_tee_recheck;
+static atomic_t apex_tee_checked = ATOMIC_INIT(0);
 static void apex_tee_recheck_fn(struct work_struct *work)
 {
 	/* Reset the one-shot guard so apex_check_tee_status runs again */
@@ -1339,7 +1340,6 @@ static void __init apex_register_fscrypt_probes(void)
  *
  * All checks run EXACTLY ONCE (guarded by atomic flag).
  * ============================================================ */
-static atomic_t apex_tee_checked = ATOMIC_INIT(0);
 
 static void apex_check_tee_status(void)
 {
