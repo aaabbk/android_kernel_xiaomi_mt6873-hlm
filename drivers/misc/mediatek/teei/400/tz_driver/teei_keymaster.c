@@ -13,11 +13,15 @@
  */
 
 #include <linux/slab.h>
+#include <linux/sched.h>
+#include <linux/printk.h>
 #include "teei_keymaster.h"
 #include "teei_client_transfer_data.h"
 #define IMSG_TAG "[tz_driver]"
 #include <imsg_log.h>
 #include <linux/vmalloc.h>
+
+extern unsigned long teei_config_flag;
 
 #define KM_COMMAND_MAGIC 'X'
 
