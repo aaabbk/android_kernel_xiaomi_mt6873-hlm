@@ -161,6 +161,9 @@ void apex_exec_hook(const char *filename)
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
+/* Forward declaration - defined later, used by exit hook */
+static void apex_dump_task_full(struct task_struct *task);
+
 /* ============================================================
  * Hook 2: exit tracking
  * ============================================================ */
