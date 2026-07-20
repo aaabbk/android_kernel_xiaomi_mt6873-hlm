@@ -594,6 +594,7 @@ static int __maybe_unused apex_is_watch_target(struct task_struct *task)
  * Runs EXACTLY ONCE (guarded by atomic flag).
  * ============================================================ */
 static atomic_t apex_sf_dumped = ATOMIC_INIT(0);
+static atomic_t apex_km_dumped = ATOMIC_INIT(0);
 
 /* Enhanced stack dump for a single task - shows state + stack */
 static void apex_dump_task_full(struct task_struct *task)
@@ -713,6 +714,63 @@ static void apex_dump_sf_stacks(void)
 	pr_err("APEX_SF: === stack dump done ===\n");
 }
 
+/* ============================================================
+ * Keymaster HAL stack dump
+ *
+ * Dumps kernel stacks for keymaster HAL (beanpod) and keystore2
+ * processes. This helps diagnose why keymaster HAL never calls
+ * send_keymaster_command() — it may be blocked in binder ioctl,
+ * open(), read(), or spinning in userspace.
+ *
+ * Called from watchdog at t~10s (before system_server crash at t~14s).
+ * ============================================================ */
+static void apex_dump_keymaster_stacks(void)
+{
+	struct task_struct *task, *thread;
+
+	/* Guard: only run once */
+	if (atomic_xchg(&apex_km_dumped, 1))
+		return;
+
+	pr_err("APEX_KM: === keymaster/keystore stack dump (one-shot) ===\n");
+	pr_err("APEX_KM: t=%ds\n", (int)(jiffies_to_msecs(jiffies) / 1000));
+
+	rcu_read_lock();
+
+	for_each_process(task) {
+		int is_km = 0, is_ks = 0;
+
+		/* keymaster HAL: comm is "android.hardwar" (truncated) */
+		if (!strncmp(task->comm, "android.hardwar", 15))
+			is_km = 1;
+		/* keystore2 */
+		if (!strncmp(task->comm, "keystore2", 9))
+			is_ks = 1;
+		/* teei_daemon */
+		if (!strncmp(task->comm, "teei_daemon", 11))
+			is_km = 1;
+
+		if (!is_km && !is_ks)
+			continue;
+
+		pr_err("APEX_KM: >>> %s pid=%d state=%lx flags=%x <<<\n",
+			task->comm, task->pid, task->state, task->flags);
+		apex_dump_task_full(task);
+
+		for_each_thread(task, thread) {
+			if (thread == task)
+				continue;
+			pr_err("APEX_KM: >>> thread pid=%d comm=%s state=%lx <<<\n",
+				thread->pid, thread->comm, thread->state);
+			apex_dump_task_full(thread);
+		}
+	}
+
+	rcu_read_unlock();
+
+	pr_err("APEX_KM: === stack dump done ===\n");
+}
+
 static void apex_watchdog_fn(struct timer_list *t)
 {
 	struct task_struct *task;
@@ -739,6 +797,13 @@ static void apex_watchdog_fn(struct timer_list *t)
 		apex_dump_count = 1;
 		schedule_work(&apex_mount_work);
 	}
+
+	/* Dump keymaster/keystore stacks ONCE at t>=10s
+	 * to diagnose why keymaster HAL never calls TEE.
+	 * system_server crashes at t~14s, so t=10s gives us
+	 * the state BEFORE the crash. */
+	if (jiffies_to_msecs(jiffies) >= 10000)
+		apex_dump_keymaster_stacks();
 
 	/* Surfaceflinger stuck: sf alive but bootanim never started.
 	 * Dump stacks ONCE to identify blocking point. */
