@@ -745,6 +745,11 @@ static int init_teei_framework(void)
 #ifdef CONFIG_MICROTRUST_FP_DRIVER
 	wake_up(&__fp_open_wq);
 #endif
+	/* Wake up keymaster HAL waiting in keymaster_open() */
+	{
+		extern wait_queue_head_t keymaster_open_wq;
+		wake_up(&keymaster_open_wq);
+	}
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT All Completed");
 
 	return TEEI_BOOT_OK;

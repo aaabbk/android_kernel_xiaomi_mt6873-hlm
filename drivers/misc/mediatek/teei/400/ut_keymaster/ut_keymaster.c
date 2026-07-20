@@ -28,6 +28,8 @@
 #include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
 #include <teei_ioc.h>
 #include <utdriver_macro.h>
 #include "../tz_driver/include/teei_id.h"
@@ -43,6 +45,8 @@
 #define KEYMASTER_SIZE			(128 * 1024)
 #define DEV_NAME			"ut_keymaster"
 
+extern unsigned long teei_config_flag;
+
 static int keymaster_major = KEYMASTER_MAJOR;
 static struct class *driver_class;
 static dev_t devno;
@@ -54,10 +58,40 @@ struct keymaster_dev {
 };
 struct keymaster_dev *keymaster_devp;
 
+/* Wait queue for keymaster_open to wait for TEE initialization.
+ * Same pattern as fp_func.c __fp_open_wq.
+ * TEE init completes in teei_client_main.c init_teei_framework(). */
+DECLARE_WAIT_QUEUE_HEAD(keymaster_open_wq);
+EXPORT_SYMBOL_GPL(keymaster_open_wq);
+
 int keymaster_open(struct inode *inode, struct file *filp)
 {
+	int ret;
 
 	IMSG_DEBUG("!!!!!microtrust kernel open keymaster dev operation!!!\n");
+
+	/* Wait for TEE initialization to complete before allowing open.
+	 * Same pattern as fp_open() in fp_func.c.
+	 * On some kernels, keymaster HAL starts before TEE init completes,
+	 * causing it to fail initialization and not register binder service.
+	 * Blocking here ensures keymaster HAL only proceeds after TEE is ready. */
+	if (teei_config_flag != 1) {
+		IMSG_INFO("[keymaster] waiting for TEE init (teei_config_flag=%lu)\n",
+			teei_config_flag);
+		ret = wait_event_timeout(keymaster_open_wq,
+			(teei_config_flag == 1),
+			msecs_to_jiffies(1000 * 10));
+		if (ret == 0) {
+			IMSG_ERROR("[E] TEE init timeout after 10s!\n");
+			return -1;
+		}
+		if (ret < 0) {
+			IMSG_ERROR("[E] wait_event_timeout error: %d\n", ret);
+			return -1;
+		}
+		IMSG_INFO("[keymaster] TEE ready, waited %u ms\n",
+			(1000 * 10 - jiffies_to_msecs(ret)));
+	}
 
 	if (keymaster_devp != NULL)
 		filp->private_data = keymaster_devp;
