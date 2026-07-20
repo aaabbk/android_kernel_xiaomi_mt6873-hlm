@@ -3634,12 +3634,18 @@ static void binder_transaction(struct binder_proc *proc,
 #ifdef BINDER_WATCHDOG
 	e->code = tr->code;
 
-	/* Track transactions to context manager (handle=0) for debugging
-	 * service registration and lookup */
-	if (tr->target.handle == 0 && (tr->code == 1 || tr->code == 2 ||
-	    tr->code == 3 || tr->code == 4)) {
-		pr_err("APEX_BINDER: txn to context_mgr from pid=%d comm=%s code=%u\n",
-			proc->pid, proc->tsk->comm, tr->code);
+	/* Track key service registration/lookup to context manager.
+	 * Only log keymaster/keystore/hwservicemanager to avoid flooding. */
+	if (tr->target.handle == 0) {
+		const char *comm = proc->tsk->comm;
+		if (strstr(comm, "keystore") ||
+		    strstr(comm, "keymaster") ||
+		    strstr(comm, "hardwar") ||
+		    strstr(comm, "hwservicem") ||
+		    strstr(comm, "beanpod")) {
+			pr_err("APEX_BINDER: ctx_mgr txn from pid=%d comm=%s code=%u\n",
+				proc->pid, comm, tr->code);
+		}
 	}
 	/* fd 0 is also valid... set initial value to -1 */
 	e->fd = -1;
@@ -3815,12 +3821,6 @@ static void binder_transaction(struct binder_proc *proc,
 	if (target_thread)
 		e->to_thread = target_thread->pid;
 	e->to_proc = target_proc->pid;
-
-	/* Log transactions to keymaster HAL (pid=591) or keystore2 */
-	if (target_proc->pid != proc->pid) {
-		pr_err("APEX_BINDER: txn from pid=%d to pid=%d code=%u\n",
-			proc->pid, target_proc->pid, tr->code);
-	}
 
 	/* TODO: reuse incoming transaction for reply */
 	t = kzalloc(sizeof(*t), GFP_KERNEL);
@@ -4319,9 +4319,15 @@ err_bad_call_stack:
 err_empty_call_stack:
 err_dead_binder:
 err_invalid_target_handle:
-	pr_err("APEX_BINDER: txn FAILED from pid=%d comm=%s code=%u err=%d line=%d\n",
-		proc->pid, proc->tsk->comm, tr->code,
-		return_error, return_error_line);
+	{
+		const char *comm = proc->tsk->comm;
+		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
+		    strstr(comm, "hardwar") || strstr(comm, "beanpod")) {
+			pr_err("APEX_BINDER: FAILED from pid=%d comm=%s code=%u err=%d line=%d\n",
+				proc->pid, comm, tr->code,
+				return_error, return_error_line);
+		}
+	}
 	if (target_thread)
 		binder_thread_dec_tmpref(target_thread);
 	if (target_proc)
@@ -6034,9 +6040,16 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		binder_dev = container_of(filp->private_data,
 					  struct binder_device, miscdev);
 	}
-	pr_err("APEX_BINDER: open pid=%d comm=%s dev=%s\n",
-		current->group_leader->pid, current->group_leader->comm,
-		binder_dev->context.name);
+	{
+		const char *comm = current->group_leader->comm;
+		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
+		    strstr(comm, "hardwar") || strstr(comm, "hwservicem") ||
+		    strstr(comm, "beanpod") || strstr(comm, "servicemanager")) {
+			pr_err("APEX_BINDER: open pid=%d comm=%s dev=%s\n",
+				current->group_leader->pid, comm,
+				binder_dev->context.name);
+		}
+	}
 	refcount_inc(&binder_dev->ref);
 	proc->context = &binder_dev->context;
 	binder_alloc_init(&proc->alloc);
