@@ -507,6 +507,8 @@ static struct work_struct apex_mount_work;
 static struct delayed_work apex_tee_recheck;
 static void apex_tee_recheck_fn(struct work_struct *work)
 {
+	/* Reset the one-shot guard so apex_check_tee_status runs again */
+	atomic_set(&apex_tee_checked, 0);
 	pr_err("APEX_TEE: === TEE status RE-CHECK (delayed, t~10s) ===\n");
 	apex_check_tee_status();
 	pr_err("APEX_TEE: === TEE status RE-CHECK done ===\n");
@@ -1345,11 +1347,8 @@ static void apex_check_tee_status(void)
 	struct path p;
 	int err;
 
-	/* Guard: only run once */
-	if (atomic_xchg(&apex_tee_checked, 1))
-		return;
-
-	pr_err("APEX_TEE: === MicroTrust TEE status check (one-shot) ===\n");
+	/* Guard: only run once per call (caller manages the atomic) */
+	pr_err("APEX_TEE: === MicroTrust TEE status check ===\n");
 
 	/* 1. Compile-time Kconfig macros - verified against defconfig */
 #ifdef CONFIG_MICROTRUST_TEE_SUPPORT

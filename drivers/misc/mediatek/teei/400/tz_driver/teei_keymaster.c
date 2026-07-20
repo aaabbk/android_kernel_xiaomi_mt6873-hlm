@@ -28,27 +28,40 @@ int send_keymaster_command(void *buffer, unsigned long size)
 	struct TEEC_UUID uuid_ta = { 0xc09c9c5d, 0xaa50, 0x4b78,
 	{ 0xb0, 0xe4, 0x6e, 0xda, 0x61, 0x55, 0x6c, 0x3a } };
 
-	/* IMSG_INFO("TEEI start send_keymaster_command\n"); */
+	pr_err("TEEI_KM: send_keymaster_command start pid=%d comm=%s size=%lu teei_config_flag=%d\n",
+		current->pid, current->comm, size, teei_config_flag);
 
-	if (buffer == NULL || size < 1)
+	if (buffer == NULL || size < 1) {
+		pr_err("TEEI_KM: invalid params buffer=%p size=%lu\n", buffer, size);
 		return -1;
+	}
+
+	if (!teei_config_flag) {
+		pr_err("TEEI_KM: TEE not initialized yet (teei_config_flag=0), failing\n");
+		return -1;
+	}
 
 	memset(&context, 0, sizeof(context));
 	ret = ut_pf_gp_initialize_context(&context);
 	if (ret) {
+		pr_err("TEEI_KM: ut_pf_gp_initialize_context FAILED ret=0x%x\n", ret);
 		IMSG_ERROR("Failed to initialize keymaster context ,err: %x",
 		ret);
 		goto release_1;
 	}
+	pr_err("TEEI_KM: context initialized, calling transfer_user_data...\n");
+
 	ret = ut_pf_gp_transfer_user_data(&context, &uuid_ta, KM_COMMAND_MAGIC,
 	buffer, size);
 	if (ret) {
+		pr_err("TEEI_KM: ut_pf_gp_transfer_user_data FAILED ret=0x%x\n", ret);
 		IMSG_ERROR("Failed to transfer data,err: %x", ret);
 		goto release_2;
 	}
+	pr_err("TEEI_KM: transfer_user_data SUCCESS\n");
 release_2:
 	ut_pf_gp_finalize_context(&context);
 release_1:
-	/* IMSG_INFO("TEEI end of send_keymaster_command\n"); */
+	pr_err("TEEI_KM: send_keymaster_command done ret=0x%x\n", ret);
 	return ret;
 }
