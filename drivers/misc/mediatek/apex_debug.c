@@ -64,6 +64,9 @@ static const char * const apex_watch_bins[] = {
 	"linkerconfig",
 	"keystore2",
 	"init",
+	"keymaster",
+	"beanpod",
+	"teei_daemon",
 	NULL,
 };
 
@@ -79,6 +82,52 @@ static int apex_watch_exec(const char *filename)
 	return 0;
 }
 
+/* Track keymaster HAL pid for precise stack dumps.
+ * Multiple instances may start over time; keep last 4 pids. */
+#define APEX_KM_PID_MAX 4
+static atomic_t apex_km_pids[APEX_KM_PID_MAX];
+static int apex_km_pid_count = 0;
+
+static void apex_record_km_pid(pid_t pid, const char *filename)
+{
+	int i;
+	bool is_km = false;
+
+	if (strstr(filename, "keymaster") || strstr(filename, "beanpod"))
+		is_km = true;
+
+	if (!is_km)
+		return;
+
+	/* Check if pid already recorded */
+	for (i = 0; i < apex_km_pid_count && i < APEX_KM_PID_MAX; i++) {
+		if (atomic_read(&apex_km_pids[i]) == pid)
+			return;
+	}
+
+	/* Record new pid */
+	if (apex_km_pid_count < APEX_KM_PID_MAX) {
+		atomic_set(&apex_km_pids[apex_km_pid_count], pid);
+		apex_km_pid_count++;
+	} else {
+		/* Overwrite oldest slot */
+		atomic_set(&apex_km_pids[0], pid);
+	}
+
+	pr_err("APEX_KM: keymaster HAL started pid=%d exec='%s' (tracked: %d)\n",
+		pid, filename, apex_km_pid_count);
+}
+
+static bool apex_is_km_pid(pid_t pid)
+{
+	int i;
+	for (i = 0; i < apex_km_pid_count && i < APEX_KM_PID_MAX; i++) {
+		if (atomic_read(&apex_km_pids[i]) == pid)
+			return true;
+	}
+	return false;
+}
+
 /* ============================================================
  * Hook 1: exec tracking
  * ============================================================ */
@@ -86,6 +135,9 @@ void apex_exec_hook(const char *filename)
 {
 	if (!filename)
 		return;
+
+	/* Track keymaster HAL pid */
+	apex_record_km_pid(current->pid, filename);
 
 	/* Always log watched binaries */
 	if (apex_watch_exec(filename)) {
@@ -118,6 +170,20 @@ void apex_do_exit_hook(long code)
 
 	if (t->flags & PF_KTHREAD)
 		return;
+
+	/* Precise keymaster HAL exit tracking by pid */
+	if (apex_is_km_pid(t->pid)) {
+		if (code > 0 && code < 0x80) {
+			pr_err("APEX_KM: *** keymaster HAL CRASHED *** pid=%d comm=%s signal(%d)\n",
+				t->pid, t->comm, (int)code);
+		} else {
+			pr_err("APEX_KM: keymaster HAL EXITED pid=%d comm=%s code=%ld\n",
+				t->pid, t->comm, code);
+		}
+		/* Dump kernel stack on exit to see what it was doing */
+		pr_err("APEX_KM: exit stack for pid=%d:\n", t->pid);
+		apex_dump_task_full(t);
+	}
 
 	if (strncmp(t->comm, "surfaceflinger", 14) &&
 	    strncmp(t->comm, "app_process", 11) &&
@@ -727,34 +793,46 @@ static void apex_dump_sf_stacks(void)
 static void apex_dump_keymaster_stacks(void)
 {
 	struct task_struct *task, *thread;
+	int i;
+	int km_found = 0;
 
 	/* Guard: only run once */
 	if (atomic_xchg(&apex_km_dumped, 1))
 		return;
 
-	pr_err("APEX_KM: === keymaster/keystore stack dump (one-shot) ===\n");
-	pr_err("APEX_KM: t=%ds\n", (int)(jiffies_to_msecs(jiffies) / 1000));
+	pr_err("APEX_KM: === keymaster HAL stack dump (by pid) ===\n");
+	pr_err("APEX_KM: t=%ds tracked_km_pids=%d\n",
+		(int)(jiffies_to_msecs(jiffies) / 1000), apex_km_pid_count);
+
+	/* Print all tracked keymaster pids */
+	for (i = 0; i < apex_km_pid_count && i < APEX_KM_PID_MAX; i++)
+		pr_err("APEX_KM: tracked pid[%d]=%d\n",
+			i, atomic_read(&apex_km_pids[i]));
 
 	rcu_read_lock();
 
 	for_each_process(task) {
-		int is_km = 0, is_ks = 0;
+		int dump = 0;
 
-		/* keymaster HAL: comm is "android.hardwar" (truncated) */
-		if (!strncmp(task->comm, "android.hardwar", 15))
-			is_km = 1;
-		/* keystore2 */
+		/* Match by tracked keymaster pid (precise) */
+		if (apex_is_km_pid(task->pid))
+			dump = 1;
+
+		/* Also match keystore2 and teei_daemon by comm */
 		if (!strncmp(task->comm, "keystore2", 9))
-			is_ks = 1;
-		/* teei_daemon */
+			dump = 1;
 		if (!strncmp(task->comm, "teei_daemon", 11))
-			is_km = 1;
+			dump = 1;
 
-		if (!is_km && !is_ks)
+		if (!dump)
 			continue;
 
-		pr_err("APEX_KM: >>> %s pid=%d state=%lx flags=%x <<<\n",
-			task->comm, task->pid, task->state, task->flags);
+		if (apex_is_km_pid(task->pid))
+			km_found = 1;
+
+		pr_err("APEX_KM: >>> %s pid=%d state=%lx flags=%x%s <<<\n",
+			task->comm, task->pid, task->state, task->flags,
+			apex_is_km_pid(task->pid) ? " [KEYMASTER]" : "");
 		apex_dump_task_full(task);
 
 		for_each_thread(task, thread) {
@@ -767,6 +845,12 @@ static void apex_dump_keymaster_stacks(void)
 	}
 
 	rcu_read_unlock();
+
+	if (!km_found) {
+		pr_err("APEX_KM: *** WARNING: no tracked keymaster HAL process found! ***\n");
+		pr_err("APEX_KM: *** keymaster HAL may have EXITED before this dump. ***\n");
+		pr_err("APEX_KM: *** Check APEX_KM: exit logs above for crash/exit info. ***\n");
+	}
 
 	pr_err("APEX_KM: === stack dump done ===\n");
 }
@@ -798,11 +882,12 @@ static void apex_watchdog_fn(struct timer_list *t)
 		schedule_work(&apex_mount_work);
 	}
 
-	/* Dump keymaster/keystore stacks ONCE at t>=10s
-	 * to diagnose why keymaster HAL never calls TEE.
-	 * system_server crashes at t~14s, so t=10s gives us
-	 * the state BEFORE the crash. */
-	if (jiffies_to_msecs(jiffies) >= 10000)
+	/* Dump keymaster HAL stacks ONCE at t>=9.5s
+	 * TEE completes init at t~9.4s, keystore2 calls earlyBootEnded
+	 * at t~9.4s and gets error -68. keymaster HAL (pid=597) starts
+	 * at t~9.25s. Dump at t=9.5s to capture keymaster HAL state
+	 * immediately after TEE init completes. */
+	if (jiffies_to_msecs(jiffies) >= 9500)
 		apex_dump_keymaster_stacks();
 
 	/* Surfaceflinger stuck: sf alive but bootanim never started.
