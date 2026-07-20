@@ -349,17 +349,61 @@ static int apex_kp_force_sig_pre(struct kprobe *p, struct pt_regs *regs)
 		target_regs->regs[28], target_regs->regs[29],
 		target_regs->regs[30]);
 
-	/* If target == current, read hardware fault registers directly.
-	 * FAR_EL1 = Fault Address Register (the address that caused the fault)
-	 * ESR_EL1 = Exception Syndrome Register (contains EC, ISS, IL fields) */
-	if (target == current) {
+	/* Read the REAL fault address and ESR from target's thread_struct.
+	 *
+	 * CRITICAL: Do NOT read FAR_EL1/ESR_EL1 directly!
+	 * __do_user_fault() saves the real exception info into
+	 *   tsk->thread.fault_address  -> faulting virtual address (FAR)
+	 *   tsk->thread.fault_code     -> exception syndrome (ESR)
+	 * BEFORE calling force_sig_info()->this kprobe fires.
+	 *
+	 * Reading ESR_EL1 directly gets the kprobe's OWN BRK #4 syndrome
+	 * (BRK64_ESR_KPROBES=0x4, ESR=0xf2000004) because the kprobe at
+	 * force_sig_info replaces its first instruction with brk #4.
+	 * That BRK overwrites ESR_EL1 with the BRK syndrome, NOT the
+	 * original data abort ESR.
+	 *
+	 * thread.fault_code is valid for SEGV/BUS/FPE/ILL (synchronous faults).
+	 */
+	{
 		u64 far, esr;
-		asm volatile("mrs %0, far_el1" : "=r"(far));
-		asm volatile("mrs %0, esr_el1" : "=r"(esr));
-		pr_err("APEX_SIG:   FAR_EL1=0x%llx ESR_EL1=0x%llx\n", far, esr);
-		/* Decode ESR_EL1 EC field (bits 31:26) */
-		pr_err("APEX_SIG:   EC=0x%llx IL=%llx ISS=0x%05llx\n",
-			(esr >> 26) & 0x3f, (esr >> 25) & 0x1, esr & 0x1ffffff);
+		u32 ec, il, iss;
+		far = target->thread.fault_address;
+		esr = target->thread.fault_code;
+		pr_err("APEX_SIG:   fault_addr=0x%llx ESR=0x%llx [from thread_struct]\n",
+			far, esr);
+		/* Decode ESR: EC=bits[31:26], IL=bit[25], ISS=bits[24:0] */
+		ec = (u32)((esr >> 26) & 0x3f);
+		il = (u32)((esr >> 25) & 1);
+		iss = (u32)(esr & 0x1ffffff);
+		pr_err("APEX_SIG:   EC=0x%02x IL=%d ISS=0x%05x\n", ec, il, iss);
+		/* Decode common EC values */
+		if (ec == 0x24 || ec == 0x25)
+			pr_err("APEX_SIG:   => Data Abort (DABT)\n");
+		else if (ec == 0x20 || ec == 0x21)
+			pr_err("APEX_SIG:   => Instruction Abort (IABT)\n");
+		else if (ec == 0x3c || ec == 0x35)
+			pr_err("APEX_SIG:   => BRK (debug) — WARNING: stale ESR!\n");
+		/* Decode DFSC for data aborts (bits[5:0] of ISS) */
+		if (ec == 0x24 || ec == 0x25) {
+			u32 dfsc = iss & 0x3f;
+			const char *dfsc_name = "unknown";
+			switch (dfsc) {
+			case 0x04: dfsc_name = "level 0 translation fault"; break;
+			case 0x05: dfsc_name = "level 1 translation fault"; break;
+			case 0x06: dfsc_name = "level 2 translation fault"; break;
+			case 0x07: dfsc_name = "level 3 translation fault"; break;
+			case 0x0c: dfsc_name = "level 0 access flag fault"; break;
+			case 0x0d: dfsc_name = "level 1 access flag fault"; break;
+			case 0x0e: dfsc_name = "level 2 access flag fault"; break;
+			case 0x0f: dfsc_name = "level 3 access flag fault"; break;
+			case 0x14: dfsc_name = "level 0 permission fault"; break;
+			case 0x15: dfsc_name = "level 1 permission fault"; break;
+			case 0x16: dfsc_name = "level 2 permission fault"; break;
+			case 0x17: dfsc_name = "level 3 permission fault"; break;
+			}
+			pr_err("APEX_SIG:   DFSC=0x%02x (%s)\n", dfsc, dfsc_name);
+		}
 	}
 
 	/* Dump the VMA (virtual memory area) containing the crash PC.
