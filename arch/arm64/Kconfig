@@ -128,10 +128,7 @@ config ARM64
 	select SPARSE_IRQ
 	select SYSCTL_EXCEPTION_TRACE
 	select THREAD_INFO_IN_TASK
-	# ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT disabled to rule out SPF race
-	# condition causing spurious SIGSEGV in system_server at boot.
-	# See: handle_speculative_fault() can return VM_FAULT_RETRY on VMA
-	# teardown races during ART GC/mmap/munmap.
+	select ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
 	help
 	  ARM 64-bit (AArch64) Linux support.
 

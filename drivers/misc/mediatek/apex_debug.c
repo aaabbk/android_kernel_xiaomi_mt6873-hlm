@@ -494,13 +494,23 @@ static void __init apex_register_signal_probes(void)
 		pr_err("APEX_SIG: register_kprobe(force_sig_info) OK\n");
 }
 
-/* Forward declaration - apex_check_mounts() is defined later but used
- * by the watchdog timer callback. */
+/* Forward declarations - these functions are defined later but used
+ * by early code (watchdog timer callback, delayed work, etc.) */
 static void apex_check_mounts(void);
+static void apex_check_tee_status(void);
 
 /* Workqueue for mount checks - kern_path() requires process context,
  * cannot be called from timer softirq context. */
 static struct work_struct apex_mount_work;
+
+/* Delayed work for second TEE status check (after ueventd creates /dev nodes) */
+static struct delayed_work apex_tee_recheck;
+static void apex_tee_recheck_fn(struct work_struct *work)
+{
+	pr_err("APEX_TEE: === TEE status RE-CHECK (delayed, t~10s) ===\n");
+	apex_check_tee_status();
+	pr_err("APEX_TEE: === TEE status RE-CHECK done ===\n");
+}
 static void apex_mount_work_fn(struct work_struct *work)
 {
 	apex_check_mounts();
@@ -1537,6 +1547,10 @@ static int __init apex_debug_init(void)
 
 	/* One-shot MicroTrust TEE driver status check */
 	apex_check_tee_status();
+
+	/* Schedule delayed TEE re-check at t~10s (after ueventd creates /dev nodes) */
+	INIT_DELAYED_WORK(&apex_tee_recheck, apex_tee_recheck_fn);
+	schedule_delayed_work(&apex_tee_recheck, 10 * HZ);
 
 	/* One-shot display driver status check */
 	apex_check_display_status();
