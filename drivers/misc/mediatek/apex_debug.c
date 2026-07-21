@@ -161,6 +161,22 @@ void apex_exec_hook(const char *filename)
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
+/* Hook 1b: file open tracking for keymaster HAL.
+ * Logs all file opens by tracked keymaster pids to see which
+ * devices/files it tries to open during initialization. */
+void apex_open_hook(const char *filename, int fd)
+{
+	if (apex_is_km_pid(current->pid)) {
+		if (fd >= 0)
+			pr_err("APEX_KM: open OK pid=%d comm=%s file='%s' fd=%d\n",
+				current->pid, current->comm, filename, fd);
+		else
+			pr_err("APEX_KM: open FAIL pid=%d comm=%s file='%s' err=%d\n",
+				current->pid, current->comm, filename, fd);
+	}
+}
+EXPORT_SYMBOL(apex_open_hook);
+
 /* Forward declaration - defined later, used by exit hook */
 static void apex_dump_task_full(struct task_struct *task);
 

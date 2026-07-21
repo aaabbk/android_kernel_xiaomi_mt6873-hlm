@@ -1100,6 +1100,12 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 		}
 	}
 
+	/* Track file opens by keymaster HAL */
+	{
+		extern void apex_open_hook(const char *filename, int fd);
+		apex_open_hook(tmp->name, fd);
+	}
+
 	putname(tmp);
 	return fd;
 }
