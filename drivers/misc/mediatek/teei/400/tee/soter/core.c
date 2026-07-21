@@ -25,6 +25,9 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
+#include <linux/delay.h>
 #include <tee_drv.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -90,6 +93,26 @@ static int soter_open(struct tee_context *ctx)
 		ret = wait_for_completion_interruptible(&shm_pool_registered);
 		if (ret == -ERESTARTSYS)
 			return -EINTR;
+	}
+
+	/* Wait for TEE to be fully initialized (TAs loaded).
+	 * shm_pool_registered completes before TAs are loaded, so
+	 * soter_open returning early causes keymaster HAL to fail
+	 * opening TEE sessions and skip binder service registration. */
+	{
+		extern unsigned long teei_config_flag;
+		extern wait_queue_head_t keymaster_open_wq;
+
+		if (teei_config_flag != 1) {
+			ret = wait_event_timeout(keymaster_open_wq,
+				(teei_config_flag == 1),
+				msecs_to_jiffies(1000 * 10));
+			if (ret == 0) {
+				IMSG_ERROR("[E] TEE init timeout in soter_open!\n");
+				kfree(ctxdata);
+				return -ETIMEDOUT;
+			}
+		}
 	}
 
 	return 0;
