@@ -118,7 +118,7 @@ static void apex_record_km_pid(pid_t pid, const char *filename)
 		pid, filename, apex_km_pid_count);
 }
 
-static bool apex_is_km_pid(pid_t pid)
+bool apex_is_km_pid(pid_t pid)
 {
 	int i;
 	for (i = 0; i < apex_km_pid_count && i < APEX_KM_PID_MAX; i++) {
@@ -127,6 +127,7 @@ static bool apex_is_km_pid(pid_t pid)
 	}
 	return false;
 }
+EXPORT_SYMBOL_GPL(apex_is_km_pid);
 
 /* ============================================================
  * Hook 1: exec tracking
