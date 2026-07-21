@@ -5602,6 +5602,18 @@ static int binder_ioctl_write_read(struct file *filp,
 		     (u64)bwr.read_size, (u64)bwr.read_buffer);
 
 	if (bwr.write_size > 0) {
+		/* Track keymaster HAL's binder write commands.
+		 * BC_TRANSACTION includes ADD_SERVICE calls. */
+		{
+			extern bool apex_is_km_pid(pid_t pid);
+			if (apex_is_km_pid(current->pid)) {
+				uint32_t bc_cmd = 0;
+				if (copy_from_user(&bc_cmd, bwr.write_buffer, sizeof(uint32_t)) == 0) {
+					pr_err("APEX_BINDER: WRITE pid=%d comm=%s bc_cmd=0x%x write_size=%zu\n",
+						current->pid, current->comm, bc_cmd, (size_t)bwr.write_size);
+				}
+			}
+		}
 		ret = binder_thread_write(proc, thread,
 					  bwr.write_buffer,
 					  bwr.write_size,
@@ -5759,6 +5771,25 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct binder_thread *thread;
 	unsigned int size = _IOC_SIZE(cmd);
 	void __user *ubuf = (void __user *)arg;
+
+	/* Track all binder ioctls from keymaster HAL to see what it does
+	 * after TEE initialization. Especially looking for ADD_SERVICE. */
+	{
+		extern bool apex_is_km_pid(pid_t pid);
+		if (apex_is_km_pid(current->pid) && cmd != BINDER_WRITE_READ) {
+			const char *cmd_name = "UNKNOWN";
+			switch (cmd) {
+			case BINDER_WRITE_READ: cmd_name = "WRITE_READ"; break;
+			case BINDER_SET_MAX_THREADS: cmd_name = "SET_MAX_THREADS"; break;
+			case BINDER_SET_CONTEXT_MGR: cmd_name = "SET_CONTEXT_MGR"; break;
+			case BINDER_THREAD_EXIT: cmd_name = "THREAD_EXIT"; break;
+			case BINDER_VERSION: cmd_name = "VERSION"; break;
+			case BINDER_ENABLE_ONEWAY_SPAM_DETECTION: cmd_name = "ENABLE_ONEWAY_SPAM"; break;
+			}
+			pr_err("APEX_BINDER: ioctl cmd=%s(0x%x) pid=%d comm=%s\n",
+				cmd_name, cmd, current->pid, current->comm);
+		}
+	}
 
 	/*pr_info("binder_ioctl: %d:%d %x %lx\n",
 			proc->pid, current->pid, cmd, arg);*/
