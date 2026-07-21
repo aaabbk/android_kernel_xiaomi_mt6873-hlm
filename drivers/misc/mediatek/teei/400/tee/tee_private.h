@@ -93,7 +93,7 @@ struct tee_shm_pool {
  * @dev:	embedded basic device structure
  * @cdev:	embedded cdev
  * @num_users:	number of active users of this device
- * @c_no_user:	completion used when unregistering the device
+ * @c_no_users:	completion used when unregistering the device
  * @mutex:	mutex protecting @num_users and @idr
  * @idr:	register of shared memory object allocated on this device
  * @pool:	shared memory pool
@@ -108,7 +108,7 @@ struct tee_device {
 	struct cdev cdev;
 
 	size_t num_users;
-	struct completion c_no_user;
+	struct completion c_no_users;
 	struct mutex mutex;	/* protects num_users and idr */
 
 	struct idr idr;
