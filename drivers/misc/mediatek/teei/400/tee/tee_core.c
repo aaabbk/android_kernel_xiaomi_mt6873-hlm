@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015-2016, Linaro Limited
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  */
 
@@ -98,6 +90,26 @@ static void teedev_close_context(struct tee_context *ctx)
 	kfree(ctx);
 }
 
+int tee_k_open(struct file *filp)
+{
+	struct tee_context *ctx;
+	struct tee_device *teedev = NULL;
+
+	teedev = isee_get_teedev();
+	if (teedev == NULL) {
+		IMSG_ERROR("Failed to get the teedev!\n");
+		return -EINVAL;
+	}
+
+	ctx = teedev_open(teedev);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
+
+	filp->private_data = ctx;
+	return 0;
+}
+
+
 static int tee_open(struct inode *inode, struct file *filp)
 {
 	struct tee_context *ctx;
@@ -109,6 +121,12 @@ static int tee_open(struct inode *inode, struct file *filp)
 	mutex_init(&ctx->mutex);
 
 	filp->private_data = ctx;
+	return 0;
+}
+
+int tee_k_release(struct file *filp)
+{
+	teedev_close_context(filp->private_data);
 	return 0;
 }
 
@@ -665,7 +683,7 @@ static int tee_ioctl_shm_id(struct tee_context *ctx, unsigned long uaddr)
 	mutex_unlock(&teedev->mutex);
 
 	if (shm_found == 0) {
-		IMSG_ERROR("Failed to find shm with uaddr = %llx\n", uaddr);
+		IMSG_ERROR("Failed to find the shm with uaddr =%llx\n", uaddr);
 		return -EINVAL;
 	}
 
@@ -690,8 +708,20 @@ static int tee_ioctl_shm_release(struct tee_context *ctx, unsigned long arg)
 	return 0;
 }
 
+/* === BEGIN ADDED: TEE_IOC_SHM_ALLOC handler === */
+/**
+ * tee_ioctl_shm_alloc() - Allocate shared memory and export as dma_buf fd
+ * @ctx:	TEE context
+ * @uarg:	User space pointer to struct tee_ioctl_shm_alloc_data
+ *
+ * Allocates shared memory from the TEE shared memory pool and exports it
+ * as a dma_buf file descriptor.  The user space process can mmap() the
+ * returned fd to obtain access to the shared memory buffer.
+ *
+ * Returns a file descriptor on success or < 0 on failure.
+ */
 static int tee_ioctl_shm_alloc(struct tee_context *ctx,
-			      struct tee_ioctl_shm_alloc_data __user *udata)
+			       struct tee_ioctl_shm_alloc_data __user *udata)
 {
 	struct tee_ioctl_shm_alloc_data data;
 	struct tee_shm *shm;
@@ -703,7 +733,8 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = isee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	shm = isee_shm_alloc(ctx, data.size,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
@@ -714,6 +745,7 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	}
 
 	data.id = shm->id;
+
 	if (copy_to_user(udata, &data, sizeof(data))) {
 		isee_shm_free(shm);
 		return -EFAULT;
@@ -721,35 +753,13 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 
 	return fd;
 }
+/* === END ADDED: TEE_IOC_SHM_ALLOC handler === */
 
-static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct tee_context *ctx = filp->private_data;
 	void __user *uarg = (void __user *)arg;
 	long retVal = 0;
-
-	/* Track TEE ioctls from keymaster HAL to diagnose
-	 * why it doesn't register binder service after opening isee_tee0 */
-	{
-		extern bool apex_is_km_pid(pid_t pid);
-		if (apex_is_km_pid(current->pid)) {
-			const char *cmd_name = "UNKNOWN";
-			switch (cmd) {
-			case TEE_IOC_VERSION: cmd_name = "VERSION"; break;
-			case TEE_IOC_SHM_ALLOC: cmd_name = "SHM_ALLOC"; break;
-			case TEE_IOC_SHM_RELEASE: cmd_name = "SHM_RELEASE"; break;
-			case TEE_IOC_SHM_ID: cmd_name = "SHM_ID"; break;
-			case TEE_IOC_OPEN_SESSION: cmd_name = "OPEN_SESSION"; break;
-			case TEE_IOC_INVOKE: cmd_name = "INVOKE"; break;
-			case TEE_IOC_CANCEL: cmd_name = "CANCEL"; break;
-			case TEE_IOC_CLOSE_SESSION: cmd_name = "CLOSE_SESSION"; break;
-			case TEE_IOC_SUPPL_RECV: cmd_name = "SUPP_RECV"; break;
-			case TEE_IOC_SUPPL_SEND: cmd_name = "SUPP_SEND"; break;
-			}
-			pr_err("APEX_KM: tee_ioctl cmd=%s(0x%x) pid=%d\n",
-				cmd_name, cmd, current->pid);
-		}
-	}
 
 #ifdef CONFIG_MICROTRUST_TEST_DRIVERS
 	if (cmd != TEE_IOC_CAPI_PROXY)
@@ -760,7 +770,7 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case TEE_IOC_VERSION:
 		retVal = tee_ioctl_version(ctx, uarg);
 		break;
-	case TEE_IOC_SHM_ALLOC:
+	case TEE_IOC_SHM_ALLOC:				/* ADDED */
 		retVal = tee_ioctl_shm_alloc(ctx, uarg);
 		break;
 	case TEE_IOC_SHM_RELEASE:
@@ -807,34 +817,6 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 #endif
 		mutex_unlock(&ctx->mutex);
 
-	{
-		extern bool apex_is_km_pid(pid_t pid);
-		if (apex_is_km_pid(current->pid)) {
-			/* SHM_ALLOC returns a valid fd (>=0) on success, not an error.
-			 * Only log as FAILED if retVal < 0 (actual error).
-			 * Always log INVOKE and OPEN_SESSION return values for debugging. */
-			if (cmd == TEE_IOC_SHM_ALLOC) {
-				if (retVal < 0)
-					pr_err("APEX_KM: tee_ioctl SHM_ALLOC FAILED ret=%ld pid=%d\n",
-						retVal, current->pid);
-				else
-					pr_err("APEX_KM: tee_ioctl SHM_ALLOC ok fd=%ld pid=%d\n",
-						retVal, current->pid);
-			} else if (cmd == TEE_IOC_INVOKE) {
-				pr_err("APEX_KM: tee_ioctl INVOKE ret=%ld pid=%d %s\n",
-					retVal, current->pid,
-					retVal < 0 ? "FAILED" : "ok");
-			} else if (cmd == TEE_IOC_OPEN_SESSION) {
-				pr_err("APEX_KM: tee_ioctl OPEN_SESSION ret=%ld pid=%d %s\n",
-					retVal, current->pid,
-					retVal < 0 ? "FAILED" : "ok");
-			} else if (retVal < 0) {
-				pr_err("APEX_KM: tee_ioctl FAILED cmd=0x%x ret=%ld pid=%d\n",
-					cmd, retVal, current->pid);
-			}
-		}
-	}
-
 	return retVal;
 }
 
@@ -855,18 +837,20 @@ static int tee_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	retVal = remap_pfn_range(vma, vma->vm_start, shm->paddr >> PAGE_SHIFT,
-				size, vma->vm_page_prot);
+					size, vma->vm_page_prot);
 
 	if (retVal != 0) {
 		IMSG_ERROR("Failed to remap the shm %d\n", retVal);
 		isee_shm_kfree(shm);
 	} else
 		shm->uaddr = vma->vm_start;
+
 exit:
 	mutex_unlock(&ctx->mutex);
 
 	return retVal;
 }
+
 
 static const struct file_operations tee_fops = {
 	.owner = THIS_MODULE,

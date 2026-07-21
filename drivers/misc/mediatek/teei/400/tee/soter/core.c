@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
  * Copyright (c) 2015, Linaro Limited
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  */
 
@@ -25,9 +17,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/delay.h>
 #include <tee_drv.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -95,43 +84,6 @@ static int soter_open(struct tee_context *ctx)
 			return -EINTR;
 	}
 
-	/* Wait for TEE to be fully initialized (TAs loaded).
-	 * shm_pool_registered completes before TAs are loaded, so
-	 * soter_open returning early causes keymaster HAL to fail
-	 * opening TEE sessions and skip binder service registration.
-	 *
-	 * This is the KEY FIX for keystore2 error -68:
-	 * keystore2 can't find keymaster service because keymaster HAL
-	 * fails to initialize (TEE not ready) and never calls addService().
-	 * Blocking here ensures keymaster HAL only proceeds after TEE is
-	 * fully initialized, so it can successfully open sessions and
-	 * register its HwBinder service with hwservicemanager.
-	 */
-	{
-		extern unsigned long teei_config_flag;
-		extern unsigned int soter_error_flag;
-		extern wait_queue_head_t keymaster_open_wq;
-
-		if (teei_config_flag != 1) {
-			ret = wait_event_timeout(keymaster_open_wq,
-				(teei_config_flag == 1),
-				msecs_to_jiffies(1000 * 30));
-			if (ret == 0) {
-				IMSG_ERROR("[E] TEE init timeout in soter_open! keymaster HAL will fail to register service\n");
-				kfree(ctxdata);
-				return -ETIMEDOUT;
-			}
-		}
-
-		/* Even if we woke up, check if TA loading actually succeeded */
-		if (soter_error_flag != 0) {
-			IMSG_ERROR("[E] soter_error_flag=%u, TA load failed! keymaster will not work\n",
-				soter_error_flag);
-			kfree(ctxdata);
-			return -ENODEV;
-		}
-	}
-
 	return 0;
 }
 
@@ -197,6 +149,15 @@ static struct tee_desc soter_desc = {
 
 static struct soter_priv *soter_priv;
 
+struct tee_device *isee_get_teedev(void)
+{
+	if (soter_priv != NULL)
+		return soter_priv->teedev;
+
+	IMSG_ERROR("[%s][%d] soter_priv is NULL!\n", __func__, __LINE__);
+	return NULL;
+}
+
 #ifndef TEEI_DTS_RESERVED_MEM
 static size_t teei_get_reserved_mem_size(void)
 {
@@ -245,7 +206,6 @@ soter_config_shm_memremap(void **memremaped_shm)
 	}
 
 	size = teei_get_reserved_mem_size();
-	pr_info("TEEI: SMC get_reserved_mem_size = 0x%zx\n", size);
 	if (size == 0) {
 		IMSG_ERROR("Failed to get the reserved memory size.\n");
 		kfree(reserved_mem);
@@ -253,7 +213,6 @@ soter_config_shm_memremap(void **memremaped_shm)
 	}
 
 	paddr = teei_get_reserved_mem_paddr();
-	pr_info("TEEI: SMC get_reserved_mem_paddr = 0x%llx\n", (unsigned long long)paddr);
 	if (paddr == 0) {
 		IMSG_ERROR("Failed to reserved shared memory\n");
 		kfree(reserved_mem);
@@ -327,8 +286,6 @@ static int __init soter_driver_init(void)
 	void *memremaped_shm = NULL;
 	int rc;
 
-	pr_info("TEEI: soter_driver_init start\n");
-
 	soter_priv = kzalloc(sizeof(*soter_priv), GFP_KERNEL);
 	if (!soter_priv) {
 		rc = -ENOMEM;
@@ -336,11 +293,8 @@ static int __init soter_driver_init(void)
 	}
 
 	pool = soter_config_shm_memremap(&memremaped_shm);
-	if (IS_ERR(pool)) {
-		pr_info("TEEI: soter_config_shm_memremap failed: %ld\n", PTR_ERR(pool));
+	if (IS_ERR(pool))
 		return PTR_ERR(pool);
-	}
-	pr_info("TEEI: soter_config_shm_memremap success\n");
 	soter_priv->pool = pool;
 	soter_priv->memremaped_shm = memremaped_shm;
 
@@ -355,7 +309,6 @@ static int __init soter_driver_init(void)
 	if (rc)
 		goto err;
 
-	pr_info("TEEI: soter_driver_init done\n");
 	return 0;
 
 err:

@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
  * All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #ifndef _ISEE_IMSG_LOG_H_
@@ -57,8 +50,8 @@ static inline unsigned long now_ms(void)
 #define IMSG_PRINT_ERROR(fmt, ...)      pr_notice(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_WARN(fmt, ...)       pr_notice(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_INFO(fmt, ...)       pr_info(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_DEBUG(fmt, ...)     pr_debug(fmt, ##__VA_ARGS__)
-#define IMSG_PRINT_TRACE(fmt, ...)     pr_debug(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_DEBUG(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
+#define IMSG_PRINT_TRACE(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_ENTER(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_LEAVE(fmt, ...)      pr_debug(fmt, ##__VA_ARGS__)
 #define IMSG_PRINT_PROFILE(fmt, ...)    pr_debug(fmt, ##__VA_ARGS__)

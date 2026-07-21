@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
  * All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -28,8 +21,6 @@
 #include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
 #include <teei_ioc.h>
 #include <utdriver_macro.h>
 #include "../tz_driver/include/teei_id.h"
@@ -45,8 +36,6 @@
 #define KEYMASTER_SIZE			(128 * 1024)
 #define DEV_NAME			"ut_keymaster"
 
-extern unsigned long teei_config_flag;
-
 static int keymaster_major = KEYMASTER_MAJOR;
 static struct class *driver_class;
 static dev_t devno;
@@ -58,57 +47,10 @@ struct keymaster_dev {
 };
 struct keymaster_dev *keymaster_devp;
 
-/* Wait queue for keymaster_open to wait for TEE initialization.
- * Same pattern as fp_func.c __fp_open_wq.
- * TEE init completes in teei_client_main.c init_teei_framework(). */
-DECLARE_WAIT_QUEUE_HEAD(keymaster_open_wq);
-EXPORT_SYMBOL_GPL(keymaster_open_wq);
-
 int keymaster_open(struct inode *inode, struct file *filp)
 {
-	int ret;
 
 	IMSG_DEBUG("!!!!!microtrust kernel open keymaster dev operation!!!\n");
-
-	/* Wait for TEE initialization to complete before allowing open.
-	 * Same pattern as fp_open() in fp_func.c.
-	 *
-	 * This is the KEY FIX for keystore2 error -68:
-	 * keystore2 reports error -68 (NAME_NOT_FOUND) because keymaster HAL
-	 * fails to initialize when TEE isn't ready yet, and thus never calls
-	 * addService() to register its HwBinder service with hwservicemanager.
-	 *
-	 * Blocking here ensures keymaster HAL only proceeds after TEE is
-	 * fully initialized and all TAs are loaded, so keymaster can
-	 * successfully open sessions and register its service.
-	 */
-	if (teei_config_flag != 1) {
-		extern unsigned int soter_error_flag;
-
-		IMSG_INFO("[keymaster] waiting for TEE init (teei_config_flag=%lu)\n",
-			teei_config_flag);
-		ret = wait_event_timeout(keymaster_open_wq,
-			(teei_config_flag == 1),
-			msecs_to_jiffies(1000 * 30));
-		if (ret == 0) {
-			IMSG_ERROR("[E] TEE init timeout after 30s! keymaster HAL will fail to register service, keystore2 will get -68\n");
-			return -ETIMEDOUT;
-		}
-		if (ret < 0) {
-			IMSG_ERROR("[E] wait_event_timeout error: %d\n", ret);
-			return -EINTR;
-		}
-
-		/* Check if TA loading actually succeeded */
-		if (soter_error_flag != 0) {
-			IMSG_ERROR("[E] soter_error_flag=%u, TA load FAILED! keymaster will not work, keystore2 gets -68\n",
-				soter_error_flag);
-			return -ENODEV;
-		}
-
-		IMSG_INFO("[keymaster] TEE ready, waited %u ms\n",
-			(1000 * 30 - jiffies_to_msecs(ret)));
-	}
 
 	if (keymaster_devp != NULL)
 		filp->private_data = keymaster_devp;
@@ -225,7 +167,6 @@ int keymaster_init(void)
 		IMSG_ERROR("keymaster device_create failed %d.\n", result);
 		goto class_destroy;
 	}
-
 	keymaster_devp = NULL;
 	keymaster_devp = vmalloc(sizeof(struct keymaster_dev));
 	if (keymaster_devp == NULL) {

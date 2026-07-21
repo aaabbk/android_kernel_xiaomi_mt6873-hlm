@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
  * All Rights Reserved.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #define IMSG_TAG "[tz_driver]"
@@ -66,7 +59,6 @@
 #include "tz_log.h"
 
 #if (CONFIG_MICROTRUST_TZ_DRIVER_MTK_BOOTPROF && CONFIG_MTPROF)
-
 #if KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
 #define TEEI_BOOT_FOOTPRINT(str) bootprof_log_boot(str)
 #else
@@ -90,11 +82,11 @@ DECLARE_SEMA(pm_sema, 0);
 DECLARE_COMPLETION(boot_decryto_lock);
 
 #ifndef CONFIG_MICROTRUST_DYNAMIC_CORE
-#define TZ_PREFER_BIND_CORE (7)
+#define TZ_PREFER_BIND_CORE (6)
 #endif
 
-#define TEEI_RT_POLICY		(0x01)
-#define TEEI_NORMAL_POLICY	(0x02)
+#define TEEI_RT_POLICY			(0x01)
+#define TEEI_NORMAL_POLICY		(0x02)
 
 /* ARMv8.2 for CA55, CA75 etc */
 static int teei_cpu_id_arm82[] = {
@@ -215,21 +207,17 @@ static void *teei_cpu_write_owner;
 
 int teei_set_switch_pri(unsigned long policy)
 {
-	struct sched_param param = {.sched_priority = 50 };
 	int retVal = 0;
 
 	if (policy == TEEI_RT_POLICY) {
 		if (teei_switch_task != NULL) {
-			sched_setscheduler_nocheck(teei_switch_task,
-						SCHED_FIFO, &param);
+			set_user_nice(teei_switch_task, MIN_NICE);
 			return 0;
 		} else
 			return -EINVAL;
 	} else if (policy == TEEI_NORMAL_POLICY) {
 		if (teei_switch_task != NULL) {
-			param.sched_priority = 0;
-			sched_setscheduler_nocheck(teei_switch_task,
-						SCHED_NORMAL, &param);
+			set_user_nice(teei_switch_task, 0);
 			return 0;
 		} else
 			return -EINVAL;
@@ -429,7 +417,6 @@ static int nq_cpu_up_prep(unsigned int cpu)
 #endif
 }
 
-
 static int nq_cpu_down_prep(unsigned int cpu)
 {
 	int retVal = 0;
@@ -613,16 +600,8 @@ static int init_teei_framework(void)
 
 	boot_soter_flag = START_STATUS;
 
-	pr_err("TEEI: init_teei_framework start, tz_log_buf_pa=%pa\n",
-		&tz_log_buf_pa);
-
 	secure_wq = create_workqueue("Secure Call");
-	if (!secure_wq) {
-		pr_err("TEEI: create_workqueue failed!\n");
-		return TEEI_BOOT_ERROR_INIT_UTGATE_FAILED;
-	}
 	TEEI_BOOT_FOOTPRINT("TEEI WorkQueue Created");
-	pr_err("TEEI: workqueue created\n");
 
 #ifdef UT_DMA_ZONE
 	boot_vfs_addr = (unsigned long)__get_free_pages(GFP_KERNEL | GFP_DMA,
@@ -631,125 +610,90 @@ static int init_teei_framework(void)
 	boot_vfs_addr = (unsigned long) __get_free_pages(GFP_KERNEL,
 					get_order(ROUND_UP(VFS_SIZE, SZ_4K)));
 #endif
-	if ((unsigned char *)boot_vfs_addr == NULL) {
-		pr_err("TEEI: __get_free_pages for VFS failed!\n");
+	if ((unsigned char *)boot_vfs_addr == NULL)
 		return TEEI_BOOT_ERROR_CREATE_VFS_ADDR;
-	}
 
-	pr_err("TEEI: VFS buffer allocated at 0x%lx\n", boot_vfs_addr);
 	TEEI_BOOT_FOOTPRINT("TEEI VFS Buffer Created");
 
 	teei_cpus_read_lock();
 
-	pr_err("TEEI: calling boot_stage1 (SMC N_INIT_T_BOOT_STAGE1)...\n");
 	boot_stage1((unsigned long)virt_to_phys((void *)boot_vfs_addr),
 						(unsigned long)tz_log_buf_pa);
 
 	teei_cpus_read_unlock();
 
-	pr_err("TEEI: boot_stage1 done, soter_error_flag=%u\n",
-		soter_error_flag);
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT Stage1 Completed");
 
 	free_pages(boot_vfs_addr, get_order(ROUND_UP(VFS_SIZE, SZ_4K)));
 
 	boot_soter_flag = END_STATUS;
-	if (soter_error_flag == 1) {
-		pr_err("TEEI: soter_error_flag=1 after stage1, TEE OS load FAILED!\n");
+	if (soter_error_flag == 1)
 		return TEEI_BOOT_ERROR_LOAD_SOTER_FAILED;
-	}
 
 	teei_cpus_read_lock();
 
-	pr_err("TEEI: calling create_nq_buffer...\n");
 	retVal = create_nq_buffer();
 
 	teei_cpus_read_unlock();
 
-	if (retVal < 0) {
-		pr_err("TEEI: create_nq_buffer failed retVal=%ld\n", retVal);
+	if (retVal < 0)
 		return TEEI_BOOT_ERROR_INIT_CMD_BUFF_FAILED;
-	}
 
-	pr_err("TEEI: create_nq_buffer done\n");
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT CREATE NQ DONE");
 
 	teei_cpus_read_lock();
 
-	pr_err("TEEI: calling teei_create_drv_shm...\n");
 	retVal = teei_create_drv_shm();
 
 	teei_cpus_read_unlock();
 
-	if (retVal == -1) {
-		pr_err("TEEI: teei_create_drv_shm failed!\n");
+	if (retVal == -1)
 		return TEEI_BOOT_ERROR_INIT_SERVICE1_FAILED;
-	}
 
-	pr_err("TEEI: teei_create_drv_shm done\n");
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT CREATE DRV SHM DONE");
 
-	pr_err("TEEI: calling teei_new_capi_init...\n");
 	retVal = teei_new_capi_init();
 
-	if (retVal < 0) {
-		pr_err("TEEI: teei_new_capi_init failed retVal=%ld\n", retVal);
+	if (retVal < 0)
 		return TEEI_BOOT_ERROR_INIT_CAPI_FAILED;
-	}
 
-	pr_err("TEEI: teei_new_capi_init done\n");
 	TEEI_BOOT_FOOTPRINT("TEEI NEW CAPI Inited");
 
 	/* waiting for keymaster shm ready and anable the keymaster IOCTL */
 	teei_capi_ready = 1;
 	up(&keymaster_api_lock);
 
-	pr_err("TEEI: keymaster unlocked, waiting for boot_decryto_lock...\n");
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT Keymaster Unlocked");
 
 	/* android notify the uTdriver that the TAs is ready !*/
 	wait_for_completion(&boot_decryto_lock);
-	pr_err("TEEI: boot_decryto_lock completed\n");
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT Decrypt Unlocked");
 
 	teei_cpus_read_lock();
 
-	pr_err("TEEI: calling teei_service_init_second...\n");
 	retVal = teei_service_init_second();
 
 	teei_cpus_read_unlock();
 
-	pr_err("TEEI: teei_service_init_second done retVal=%ld\n", retVal);
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT Service2 Inited");
 	if (retVal == -1)
 		return TEEI_BOOT_ERROR_INIT_SERVICE2_FAILED;
 
 	teei_cpus_read_lock();
 
-	pr_err("TEEI: calling t_os_load_image (SMC N_INVOKE_T_NQ)...\n");
 	t_os_load_image();
 
 	teei_cpus_read_unlock();
 
-	pr_err("TEEI: t_os_load_image done, soter_error_flag=%u\n",
-		soter_error_flag);
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT Load TEES Completed");
-	if (soter_error_flag == 1) {
-		pr_err("TEEI: soter_error_flag=1 after load_image, TA load FAILED!\n");
+	if (soter_error_flag == 1)
 		return TEEI_BOOT_ERROR_LOAD_TA_FAILED;
-	}
 
 	teei_config_flag = 1;
-	pr_err("TEEI: init_teei_framework SUCCESS! teei_config_flag=1\n");
 
 #ifdef CONFIG_MICROTRUST_FP_DRIVER
 	wake_up(&__fp_open_wq);
 #endif
-	/* Wake up keymaster HAL waiting in keymaster_open() */
-	{
-		extern wait_queue_head_t keymaster_open_wq;
-		wake_up(&keymaster_open_wq);
-	}
 	TEEI_BOOT_FOOTPRINT("TEEI BOOT All Completed");
 
 	return TEEI_BOOT_OK;
@@ -797,24 +741,16 @@ static long teei_config_ioctl(struct file *file,
 			long res;
 			int i;
 
-			pr_err("TEEI: IOCTL_INIT_TEEI received from pid=%d comm=%s\n",
-				current->pid, current->comm);
-
 			res = copy_from_user(&param, (void *)arg,
 					sizeof(struct init_param));
 			if (res) {
-				pr_err("TEEI: copy_from_user failed\n");
 				IMSG_ERROR("failed to copy from user\n");
 				retVal = -EINVAL;
 				goto err;
 			}
 
-			pr_err("TEEI: calling init_teei_framework (uuid_count=%u)...\n",
-				param.uuid_count);
 			retVal = init_teei_framework();
 
-			pr_err("TEEI: init_teei_framework returned %d (%s)\n",
-				retVal, teei_boot_error_to_string(retVal));
 			TEEI_BOOT_FOOTPRINT(
 				teei_boot_error_to_string(retVal));
 
@@ -941,38 +877,29 @@ static int teei_config_init(void)
 	int retVal = 0;
 	struct device *class_dev = NULL;
 
-	pr_err("TEEI: teei_config_init start\n");
-
 	retVal = alloc_chrdev_region(&teei_config_device_no,
 						0, 1, TEEI_CONFIG_DEV);
 
 	if (retVal < 0) {
-		pr_err("TEEI: teei_config alloc_chrdev_region failed %x\n", retVal);
 		IMSG_ERROR("alloc_chrdev_region failed %x.\n", retVal);
 		return retVal;
 	}
-	pr_err("TEEI: teei_config alloc_chrdev_region ok dev=%x\n",
-		teei_config_device_no);
 
 	config_driver_class = class_create(THIS_MODULE, TEEI_CONFIG_DEV);
 	if (IS_ERR(config_driver_class)) {
 		retVal = -ENOMEM;
-		pr_err("TEEI: teei_config class_create failed\n");
 		IMSG_ERROR("class_create failed %x\n", retVal);
 		goto unregister_chrdev_region;
 	}
-	pr_err("TEEI: teei_config class_create ok\n");
 
 	class_dev = device_create(config_driver_class, NULL,
 			teei_config_device_no, NULL, TEEI_CONFIG_DEV);
 
 	if (class_dev == NULL) {
-		pr_err("TEEI: teei_config device_create failed (NULL)\n");
 		IMSG_ERROR("class_device_create failed %x\n", retVal);
 		retVal = -ENOMEM;
 		goto class_destroy;
 	}
-	pr_err("TEEI: teei_config device_create ok (/dev/teei_config)\n");
 
 	cdev_init(&teei_config_cdev, &teei_config_fops);
 	teei_config_cdev.owner = THIS_MODULE;
@@ -981,22 +908,19 @@ static int teei_config_init(void)
 			MKDEV(MAJOR(teei_config_device_no), 0), 1);
 
 	if (retVal < 0) {
-		pr_err("TEEI: teei_config cdev_add failed %x\n", retVal);
 		IMSG_ERROR("cdev_add failed %x\n", retVal);
 		goto class_device_destroy;
 	}
-	pr_err("TEEI: teei_config cdev_add ok — /dev/teei_config READY\n");
 
 	goto return_fn;
 
 class_device_destroy:
-	device_destroy(config_driver_class, teei_config_device_no);
+	device_destroy(driver_class, teei_config_device_no);
 class_destroy:
-	class_destroy(config_driver_class);
+	class_destroy(driver_class);
 unregister_chrdev_region:
 	unregister_chrdev_region(teei_config_device_no, 1);
 return_fn:
-	pr_err("TEEI: teei_config_init done retVal=%d\n", retVal);
 	return retVal;
 }
 
@@ -1089,35 +1013,20 @@ static const struct file_operations teei_client_fops = {
 static int teei_probe(struct platform_device *pdev)
 {
 	int ut_irq = 0;
-	int ret;
-
-	pr_err("TEEI: teei_probe start, pdev=%p\n", pdev);
 
 	ut_irq = platform_get_irq(pdev, 0);
-	pr_err("TEEI: teei_probe ut_irq=%d\n", ut_irq);
-	if (ut_irq < 0) {
-		pr_err("TEEI: teei_probe platform_get_irq FAILED %d\n", ut_irq);
-		return ut_irq;
-	}
+	IMSG_INFO("teei device ut_irq is %d\n", ut_irq);
 
-	ret = init_sysfs(pdev);
-	if (ret < 0) {
-		pr_err("TEEI: teei_probe init_sysfs FAILED ret=%d\n", ret);
+	if (init_sysfs(pdev) < 0) {
 		IMSG_ERROR("failed to init tz_driver sysfs\n");
 		return -1;
 	}
-	pr_err("TEEI: teei_probe init_sysfs ok\n");
 
-	ret = register_ut_irq_handler(ut_irq);
-	if (ret < 0) {
-		pr_err("TEEI: teei_probe register_ut_irq_handler FAILED ret=%d irq=%d\n",
-			ret, ut_irq);
+	if (register_ut_irq_handler(ut_irq) < 0) {
 		IMSG_ERROR("teei_device can't register irq %d\n", ut_irq);
 		return -1;
 	}
-	pr_err("TEEI: teei_probe register_ut_irq_handler ok (irq=%d)\n", ut_irq);
 
-	pr_err("TEEI: teei_probe success\n");
 	return 0;
 }
 
@@ -1158,8 +1067,6 @@ static int teei_client_init(void)
 
 	struct sched_param param = {.sched_priority = 50 };
 
-	pr_err("TEEI: teei_client_init start\n");
-
 	/* IMSG_DEBUG("TEEI Agent Driver Module Init ...\n"); */
 
 	IMSG_DEBUG("=====================================================\n\n");
@@ -1179,7 +1086,6 @@ static int teei_client_init(void)
 		IMSG_ERROR("unable to register teei driver(%d)\n", ret_code);
 		return ret_code;
 	}
-	pr_err("TEEI: platform_driver_register done\n");
 
 	tz_drv_state = kzalloc(sizeof(struct tz_driver_state), GFP_KERNEL);
 	if (!tz_drv_state)
@@ -1295,7 +1201,8 @@ static int teei_client_init(void)
 
 	init_tlog_comp_fn();
 
-	/* create the teei log thread */
+/*
+ 	create the teei log thread
 	teei_log_task = kthread_create(teei_log_fn, NULL, "teei_log_thread");
 	if (IS_ERR(teei_log_task)) {
 		IMSG_ERROR("create teei log thread failed: %ld\n",
@@ -1307,17 +1214,9 @@ static int teei_client_init(void)
 	wake_up_process(teei_log_task);
 
 	IMSG_DEBUG("create the sub_thread successfully!\n");
+*/
 
-	{
-		int cfg_ret = teei_config_init();
-		if (cfg_ret < 0)
-			pr_err("TEEI: teei_config_init FAILED ret=%d (/dev/teei_config NOT created!)\n",
-				cfg_ret);
-		else
-			pr_err("TEEI: teei_config_init done (/dev/teei_config created)\n");
-	}
-
-	pr_err("TEEI: teei_client_init done\n");
+	teei_config_init();
 
 	goto return_fn;
 

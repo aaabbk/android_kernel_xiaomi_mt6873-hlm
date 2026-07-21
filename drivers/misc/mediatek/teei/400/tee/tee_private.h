@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2015-2016, Linaro Limited
  * Copyright (c) 2015-2019, MICROTRUST Incorporated
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  */
 #ifndef TEE_PRIVATE_H
@@ -116,7 +108,7 @@ struct tee_device {
 	struct cdev cdev;
 
 	size_t num_users;
-	struct completion c_no_users;
+	struct completion c_no_user;
 	struct mutex mutex;	/* protects num_users and idr */
 
 	struct idr idr;
@@ -127,8 +119,10 @@ int tee_shm_init(void);
 
 int isee_shm_get_fd(struct tee_shm *shm);
 
+/* === BEGIN ADDED: declarations for TEE_IOC_SHM_ALLOC handler === */
 struct tee_shm *isee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
 void isee_shm_free(struct tee_shm *shm);
+/* === END ADDED: declarations for TEE_IOC_SHM_ALLOC handler === */
 
 bool isee_device_get(struct tee_device *teedev);
 void isee_device_put(struct tee_device *teedev);
@@ -148,5 +142,11 @@ extern struct dma_buf *dma_buf_export(
 #endif
 
 extern int dma_buf_fd(struct dma_buf *dmabuf, int flags);
+
+extern long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+extern int tee_k_open(struct file *filp);
+extern int tee_k_release(struct file *filp);
+
+extern struct tee_device *isee_get_teedev(void);
 
 #endif /*TEE_PRIVATE_H*/
