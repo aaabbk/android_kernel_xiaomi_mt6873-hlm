@@ -5608,7 +5608,7 @@ static int binder_ioctl_write_read(struct file *filp,
 			extern bool apex_is_km_pid(pid_t pid);
 			if (apex_is_km_pid(current->pid)) {
 				uint32_t bc_cmd = 0;
-				if (copy_from_user(&bc_cmd, bwr.write_buffer, sizeof(uint32_t)) == 0) {
+				if (copy_from_user(&bc_cmd, (const void __user *)(unsigned long)bwr.write_buffer, sizeof(uint32_t)) == 0) {
 					pr_err("APEX_BINDER: WRITE pid=%d comm=%s bc_cmd=0x%x write_size=%zu\n",
 						current->pid, current->comm, bc_cmd, (size_t)bwr.write_size);
 				}
@@ -5784,7 +5784,6 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			case BINDER_SET_CONTEXT_MGR: cmd_name = "SET_CONTEXT_MGR"; break;
 			case BINDER_THREAD_EXIT: cmd_name = "THREAD_EXIT"; break;
 			case BINDER_VERSION: cmd_name = "VERSION"; break;
-			case BINDER_ENABLE_ONEWAY_SPAM_DETECTION: cmd_name = "ENABLE_ONEWAY_SPAM"; break;
 			}
 			pr_err("APEX_BINDER: ioctl cmd=%s(0x%x) pid=%d comm=%s\n",
 				cmd_name, cmd, current->pid, current->comm);
