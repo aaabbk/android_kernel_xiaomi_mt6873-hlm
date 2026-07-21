@@ -728,6 +728,29 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	void __user *uarg = (void __user *)arg;
 	long retVal = 0;
 
+	/* Track TEE ioctls from keymaster HAL to diagnose
+	 * why it doesn't register binder service after opening isee_tee0 */
+	{
+		extern bool apex_is_km_pid(pid_t pid);
+		if (apex_is_km_pid(current->pid)) {
+			const char *cmd_name = "UNKNOWN";
+			switch (cmd) {
+			case TEE_IOC_VERSION: cmd_name = "VERSION"; break;
+			case TEE_IOC_SHM_ALLOC: cmd_name = "SHM_ALLOC"; break;
+			case TEE_IOC_SHM_RELEASE: cmd_name = "SHM_RELEASE"; break;
+			case TEE_IOC_SHM_ID: cmd_name = "SHM_ID"; break;
+			case TEE_IOC_OPEN_SESSION: cmd_name = "OPEN_SESSION"; break;
+			case TEE_IOC_INVOKE: cmd_name = "INVOKE"; break;
+			case TEE_IOC_CANCEL: cmd_name = "CANCEL"; break;
+			case TEE_IOC_CLOSE_SESSION: cmd_name = "CLOSE_SESSION"; break;
+			case TEE_IOC_SUPPL_RECV: cmd_name = "SUPP_RECV"; break;
+			case TEE_IOC_SUPPL_SEND: cmd_name = "SUPP_SEND"; break;
+			}
+			pr_err("APEX_KM: tee_ioctl cmd=%s(0x%x) pid=%d\n",
+				cmd_name, cmd, current->pid);
+		}
+	}
+
 #ifdef CONFIG_MICROTRUST_TEST_DRIVERS
 	if (cmd != TEE_IOC_CAPI_PROXY)
 #endif
@@ -783,6 +806,14 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (cmd != TEE_IOC_CAPI_PROXY)
 #endif
 		mutex_unlock(&ctx->mutex);
+
+	{
+		extern bool apex_is_km_pid(pid_t pid);
+		if (apex_is_km_pid(current->pid) && retVal) {
+			pr_err("APEX_KM: tee_ioctl FAILED cmd=0x%x ret=%ld pid=%d\n",
+				cmd, retVal, current->pid);
+		}
+	}
 
 	return retVal;
 }
