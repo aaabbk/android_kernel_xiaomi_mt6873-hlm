@@ -72,25 +72,42 @@ int keymaster_open(struct inode *inode, struct file *filp)
 
 	/* Wait for TEE initialization to complete before allowing open.
 	 * Same pattern as fp_open() in fp_func.c.
-	 * On some kernels, keymaster HAL starts before TEE init completes,
-	 * causing it to fail initialization and not register binder service.
-	 * Blocking here ensures keymaster HAL only proceeds after TEE is ready. */
+	 *
+	 * This is the KEY FIX for keystore2 error -68:
+	 * keystore2 reports error -68 (NAME_NOT_FOUND) because keymaster HAL
+	 * fails to initialize when TEE isn't ready yet, and thus never calls
+	 * addService() to register its HwBinder service with hwservicemanager.
+	 *
+	 * Blocking here ensures keymaster HAL only proceeds after TEE is
+	 * fully initialized and all TAs are loaded, so keymaster can
+	 * successfully open sessions and register its service.
+	 */
 	if (teei_config_flag != 1) {
+		extern unsigned int soter_error_flag;
+
 		IMSG_INFO("[keymaster] waiting for TEE init (teei_config_flag=%lu)\n",
 			teei_config_flag);
 		ret = wait_event_timeout(keymaster_open_wq,
 			(teei_config_flag == 1),
-			msecs_to_jiffies(1000 * 10));
+			msecs_to_jiffies(1000 * 30));
 		if (ret == 0) {
-			IMSG_ERROR("[E] TEE init timeout after 10s!\n");
-			return -1;
+			IMSG_ERROR("[E] TEE init timeout after 30s! keymaster HAL will fail to register service, keystore2 will get -68\n");
+			return -ETIMEDOUT;
 		}
 		if (ret < 0) {
 			IMSG_ERROR("[E] wait_event_timeout error: %d\n", ret);
-			return -1;
+			return -EINTR;
 		}
+
+		/* Check if TA loading actually succeeded */
+		if (soter_error_flag != 0) {
+			IMSG_ERROR("[E] soter_error_flag=%u, TA load FAILED! keymaster will not work, keystore2 gets -68\n",
+				soter_error_flag);
+			return -ENODEV;
+		}
+
 		IMSG_INFO("[keymaster] TEE ready, waited %u ms\n",
-			(1000 * 10 - jiffies_to_msecs(ret)));
+			(1000 * 30 - jiffies_to_msecs(ret)));
 	}
 
 	if (keymaster_devp != NULL)

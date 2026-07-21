@@ -3647,6 +3647,15 @@ static void binder_transaction(struct binder_proc *proc,
 				proc->pid, comm, tr->code);
 		}
 	}
+	/* Also log ALL transactions from keymaster HAL to see what handle
+	 * it sends BC_TRANSACTION_SG to. */
+	{
+		extern bool apex_is_km_pid(pid_t pid);
+		if (apex_is_km_pid(proc->pid) && tr->target.handle != 0) {
+			pr_err("APEX_BINDER: KM txn to handle=%u code=%u pid=%d comm=%s\n",
+				tr->target.handle, tr->code, proc->pid, proc->tsk->comm);
+		}
+	}
 	/* fd 0 is also valid... set initial value to -1 */
 	e->fd = -1;
 #endif
