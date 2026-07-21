@@ -4616,6 +4616,19 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
+			/* Log ALL keymaster HAL transactions (not just first cmd in buffer).
+			 * This captures ADD_SERVICE (handle=0, code=3) even when it's
+			 * not the first command in the write_buffer. */
+			{
+				extern bool apex_is_km_pid(pid_t pid);
+				if (apex_is_km_pid(proc->pid)) {
+					const char *txn_type = (cmd == BC_REPLY_SG) ? "REPLY" : "TRANSACTION";
+					pr_err("APEX_BINDER: KM %s_SG handle=%u code=%u flags=%u pid=%d comm=%s\n",
+						txn_type, tr.transaction_data.target.handle,
+						tr.transaction_data.code, tr.transaction_data.flags,
+						proc->pid, proc->tsk->comm);
+				}
+			}
 			binder_transaction(proc, thread, &tr.transaction_data,
 					   cmd == BC_REPLY_SG, tr.buffers_size);
 			break;
@@ -4627,6 +4640,16 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
+			/* Log ALL keymaster HAL transactions (not just first cmd in buffer). */
+			{
+				extern bool apex_is_km_pid(pid_t pid);
+				if (apex_is_km_pid(proc->pid)) {
+					const char *txn_type = (cmd == BC_REPLY) ? "REPLY" : "TRANSACTION";
+					pr_err("APEX_BINDER: KM %s handle=%u code=%u flags=%u pid=%d comm=%s\n",
+						txn_type, tr.target.handle, tr.code, tr.flags,
+						proc->pid, proc->tsk->comm);
+				}
+			}
 			binder_transaction(proc, thread, &tr,
 					   cmd == BC_REPLY, 0);
 			break;

@@ -809,9 +809,29 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	{
 		extern bool apex_is_km_pid(pid_t pid);
-		if (apex_is_km_pid(current->pid) && retVal) {
-			pr_err("APEX_KM: tee_ioctl FAILED cmd=0x%x ret=%ld pid=%d\n",
-				cmd, retVal, current->pid);
+		if (apex_is_km_pid(current->pid)) {
+			/* SHM_ALLOC returns a valid fd (>=0) on success, not an error.
+			 * Only log as FAILED if retVal < 0 (actual error).
+			 * Always log INVOKE and OPEN_SESSION return values for debugging. */
+			if (cmd == TEE_IOC_SHM_ALLOC) {
+				if (retVal < 0)
+					pr_err("APEX_KM: tee_ioctl SHM_ALLOC FAILED ret=%ld pid=%d\n",
+						retVal, current->pid);
+				else
+					pr_err("APEX_KM: tee_ioctl SHM_ALLOC ok fd=%ld pid=%d\n",
+						retVal, current->pid);
+			} else if (cmd == TEE_IOC_INVOKE) {
+				pr_err("APEX_KM: tee_ioctl INVOKE ret=%ld pid=%d %s\n",
+					retVal, current->pid,
+					retVal < 0 ? "FAILED" : "ok");
+			} else if (cmd == TEE_IOC_OPEN_SESSION) {
+				pr_err("APEX_KM: tee_ioctl OPEN_SESSION ret=%ld pid=%d %s\n",
+					retVal, current->pid,
+					retVal < 0 ? "FAILED" : "ok");
+			} else if (retVal < 0) {
+				pr_err("APEX_KM: tee_ioctl FAILED cmd=0x%x ret=%ld pid=%d\n",
+					cmd, retVal, current->pid);
+			}
 		}
 	}
 
