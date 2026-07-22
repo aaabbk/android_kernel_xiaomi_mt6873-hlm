@@ -60,9 +60,8 @@ static int soter_open(struct tee_context *ctx)
 	struct soter_context_data *ctxdata;
 	int ret;
 
-	pr_err("SOTER_OPEN: ctx=%p teedev=%p teedev->pool=%p is_shm_pool_available=%d\n",
-		ctx, ctx->teedev, ctx->teedev->pool,
-		atomic_read(&is_shm_pool_available));
+	pr_err("SOTER_OPEN: ctx=%p is_shm_pool_available=%d\n",
+		ctx, atomic_read(&is_shm_pool_available));
 
 	ctxdata = kzalloc(sizeof(*ctxdata), GFP_KERNEL);
 	if (!ctxdata)
@@ -75,8 +74,7 @@ static int soter_open(struct tee_context *ctx)
 		ret = wait_for_completion_interruptible(&shm_pool_registered);
 		if (ret == -ERESTARTSYS)
 			return -EINTR;
-		pr_err("SOTER_OPEN: shm_pool_registered done, teedev->pool=%p\n",
-			ctx->teedev->pool);
+		pr_err("SOTER_OPEN: shm_pool_registered done\n");
 	}
 	return 0;
 }
@@ -288,12 +286,12 @@ static int __init soter_driver_init(void)
 	}
 	soter_priv->teedev = teedev;
 	rc = isee_device_register(teedev);
-	pr_err("SOTER_INIT: isee_device_register returned rc=%d, teedev->pool=%p teedev->name=%s\n",
-		rc, teedev->pool, teedev->name);
+	pr_err("SOTER_INIT: isee_device_register returned rc=%d teedev=%p\n",
+		rc, teedev);
 	if (rc)
 		goto err;
-	pr_err("SOTER_INIT: SUCCESS! teedev=%p pool=%p name=%s\n",
-		teedev, teedev->pool, teedev->name);
+	pr_err("SOTER_INIT: SUCCESS! teedev=%p pool=%p\n",
+		teedev, pool);
 	return 0;
 err:
 	if (soter_priv) {
