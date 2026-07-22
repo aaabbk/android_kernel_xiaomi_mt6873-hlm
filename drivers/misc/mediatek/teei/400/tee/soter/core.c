@@ -4,9 +4,7 @@
  * Copyright (c) 2015, Linaro Limited
  *
  */
-
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/version.h>
 #include <linux/errno.h>
 #include <linux/io.h>
@@ -20,39 +18,33 @@
 #include <tee_drv.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
-
 #define IMSG_TAG "[tz_driver]"
 #include <imsg_log.h>
-
 #include "soter_private.h"
 #include "soter_smc.h"
 #include <nt_smc_call.h>
-
-
 #define SOTER_SHM_NUM_PRIV_PAGES	1
-
 static struct reserved_mem *reserved_mem;
 static atomic_t is_shm_pool_available = ATOMIC_INIT(0);
 static DECLARE_COMPLETION(shm_pool_registered);
-
 int teei_new_capi_init(void)
 {
+	pr_err("TEEI_CAPI_INIT: reserved_mem=%p\n", reserved_mem);
 	if (reserved_mem) {
 		int ret = soter_register_shm_pool(
 				reserved_mem->base, reserved_mem->size);
-
+		pr_err("TEEI_CAPI_INIT: soter_register_shm_pool ret=%d base=%pa size=%zx\n",
+			ret, &reserved_mem->base, reserved_mem->size);
 		if (!ret) {
 			atomic_set(&is_shm_pool_available, 1);
 			complete_all(&shm_pool_registered);
+			pr_err("TEEI_CAPI_INIT: shm_pool_registered completed!\n");
 		}
 		return ret;
 	}
-
 	IMSG_ERROR("capi reserve memory is NULL!\n");
-
 	return -ENOMEM;
 }
-
 static void soter_get_version(struct tee_device *teedev,
 			      struct tee_ioctl_version_data *vers)
 {
@@ -63,30 +55,31 @@ static void soter_get_version(struct tee_device *teedev,
 	};
 	*vers = v;
 }
-
 static int soter_open(struct tee_context *ctx)
 {
 	struct soter_context_data *ctxdata;
 	int ret;
 
+	pr_err("SOTER_OPEN: ctx=%p teedev=%p teedev->pool=%p is_shm_pool_available=%d\n",
+		ctx, ctx->teedev, ctx->teedev->pool,
+		atomic_read(&is_shm_pool_available));
+
 	ctxdata = kzalloc(sizeof(*ctxdata), GFP_KERNEL);
 	if (!ctxdata)
 		return -ENOMEM;
-
 	mutex_init(&ctxdata->mutex);
 	INIT_LIST_HEAD(&ctxdata->sess_list);
-
 	ctx->data = ctxdata;
-
 	if (!atomic_read(&is_shm_pool_available)) {
+		pr_err("SOTER_OPEN: waiting for shm_pool_registered...\n");
 		ret = wait_for_completion_interruptible(&shm_pool_registered);
 		if (ret == -ERESTARTSYS)
 			return -EINTR;
+		pr_err("SOTER_OPEN: shm_pool_registered done, teedev->pool=%p\n",
+			ctx->teedev->pool);
 	}
-
 	return 0;
 }
-
 static void soter_release(struct tee_context *ctx)
 {
 	struct soter_context_data *ctxdata = ctx->data;
@@ -95,10 +88,8 @@ static void soter_release(struct tee_context *ctx)
 	phys_addr_t parg;
 	struct soter_session *sess;
 	struct soter_session *sess_tmp;
-
 	if (!ctxdata)
 		return;
-
 	shm = isee_shm_alloc_noid(ctx, sizeof(struct optee_msg_arg), TEE_SHM_MAPPED);
 	if (!IS_ERR(shm)) {
 		arg = isee_shm_get_va(shm, 0);
@@ -111,7 +102,6 @@ static void soter_release(struct tee_context *ctx)
 		if (!IS_ERR(arg))
 			isee_shm_va2pa(shm, arg, &parg);
 	}
-
 	list_for_each_entry_safe(sess, sess_tmp, &ctxdata->sess_list,
 				list_node) {
 		list_del(&sess->list_node);
@@ -124,13 +114,10 @@ static void soter_release(struct tee_context *ctx)
 		kfree(sess);
 	}
 	kfree(ctxdata);
-
 	if (!IS_ERR(shm))
 		isee_shm_free(shm);
-
 	ctx->data = NULL;
 }
-
 static struct tee_driver_ops soter_ops = {
 	.get_version = soter_get_version,
 	.open = soter_open,
@@ -140,45 +127,37 @@ static struct tee_driver_ops soter_ops = {
 	.invoke_func = soter_invoke_func,
 	.cancel_req = soter_cancel_func,
 };
-
 static struct tee_desc soter_desc = {
 	.name = "soter-clnt",
 	.ops = &soter_ops,
 	.owner = THIS_MODULE,
 };
-
 static struct soter_priv *soter_priv;
-
 struct tee_device *isee_get_teedev(void)
 {
 	if (soter_priv != NULL)
 		return soter_priv->teedev;
-
 	IMSG_ERROR("[%s][%d] soter_priv is NULL!\n", __func__, __LINE__);
 	return NULL;
 }
-
 #ifndef TEEI_DTS_RESERVED_MEM
 static size_t teei_get_reserved_mem_size(void)
 {
 	unsigned long mem_size = 0;
-
 	mem_size = teei_secure_call(N_GET_RESERVED_MEM_SIZE, 0, 0, 0);
-
+	pr_err("SOTER_INIT: teei_get_reserved_mem_size() SMC returned 0x%lx (%zu)\n",
+		mem_size, (size_t)mem_size);
 	return (size_t)mem_size;
 }
-
 static phys_addr_t teei_get_reserved_mem_paddr(void)
 {
 	unsigned long phys_addr = 0;
-
 	phys_addr = teei_secure_call(N_GET_RESERVED_MEM_PADDR, 0, 0, 0);
-
+	pr_err("SOTER_INIT: teei_get_reserved_mem_paddr() SMC returned 0x%lx (%pa)\n",
+		phys_addr, &phys_addr);
 	return (phys_addr_t)phys_addr;
 }
 #endif
-
-
 static struct tee_shm_pool *
 soter_config_shm_memremap(void **memremaped_shm)
 {
@@ -189,82 +168,82 @@ soter_config_shm_memremap(void **memremaped_shm)
 	void *va;
 	struct tee_shm_pool_mem_info priv_info;
 	struct tee_shm_pool_mem_info dmabuf_info;
-
 #ifdef TEEI_DTS_RESERVED_MEM
 	if (!reserved_mem) {
 		IMSG_ERROR("cannot find reserved memory in device tree\n");
 		return ERR_PTR(-EINVAL);
 	}
-
 	paddr = reserved_mem->base;
 	size = reserved_mem->size;
 #else
 	reserved_mem = kmalloc(sizeof(struct reserved_mem), GFP_KERNEL);
 	if (reserved_mem == NULL) {
-		IMSG_ERROR("Failed to malloc reserved_mem struct\n");
-		return NULL;
+		pr_err("SOTER_INIT: Failed to malloc reserved_mem struct\n");
+		return ERR_PTR(-ENOMEM);
 	}
-
 	size = teei_get_reserved_mem_size();
 	if (size == 0) {
-		IMSG_ERROR("Failed to get the reserved memory size.\n");
+		pr_err("SOTER_INIT: SMC N_GET_RESERVED_MEM_SIZE returned 0! TEE OS not ready?\n");
 		kfree(reserved_mem);
-		return NULL;
+		reserved_mem = NULL;
+		return ERR_PTR(-EINVAL);
 	}
-
 	paddr = teei_get_reserved_mem_paddr();
 	if (paddr == 0) {
-		IMSG_ERROR("Failed to reserved shared memory\n");
+		pr_err("SOTER_INIT: SMC N_GET_RESERVED_MEM_PADDR returned 0! TEE OS not ready?\n");
 		kfree(reserved_mem);
-		return NULL;
+		reserved_mem = NULL;
+		return ERR_PTR(-EINVAL);
 	}
-
 	reserved_mem->base = paddr;
 	reserved_mem->size = size;
 #endif
-
 	IMSG_INFO("reserved memory @ 0x%llx, size %zx\n",
 		(unsigned long long)paddr, size);
-
+	pr_err("SOTER_INIT: reserved memory @ 0x%llx, size %zx\n",
+		(unsigned long long)paddr, size);
 	if (size < 2 * SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE) {
 		IMSG_ERROR("too small shared memory area\n");
+		pr_err("SOTER_INIT: too small shared memory area (size=%zx < %zx)\n",
+			size, (size_t)(2 * SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE));
 #ifndef TEEI_DTS_RESERVED_MEM
 	kfree(reserved_mem);
+	reserved_mem = NULL;
 #endif
 		return ERR_PTR(-EINVAL);
 	}
-
 	va = ioremap_cache(paddr, size);
-
 	if (!va) {
 		IMSG_ERROR("shared memory ioremap failed\n");
+		pr_err("SOTER_INIT: ioremap_cache(paddr=%pa, size=%zx) failed\n",
+			&paddr, size);
 #ifndef TEEI_DTS_RESERVED_MEM
-		kfree(reserved_mem);
+	kfree(reserved_mem);
+	reserved_mem = NULL;
 #endif
 		return ERR_PTR(-EINVAL);
 	}
 	vaddr = (unsigned long)va;
-
 	priv_info.vaddr = vaddr;
 	priv_info.paddr = paddr;
 	priv_info.size = SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE;
 	dmabuf_info.vaddr = vaddr + SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE;
 	dmabuf_info.paddr = paddr + SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE;
 	dmabuf_info.size = size - SOTER_SHM_NUM_PRIV_PAGES * PAGE_SIZE;
-
 	pool = isee_shm_pool_alloc_res_mem(&priv_info, &dmabuf_info);
+	pr_err("SOTER_INIT: isee_shm_pool_alloc_res_mem returned pool=%p IS_ERR=%d\n",
+		pool, IS_ERR(pool));
 	if (IS_ERR(pool)) {
 #ifndef TEEI_DTS_RESERVED_MEM
 		kfree(reserved_mem);
+		reserved_mem = NULL;
 #endif
 		goto out;
 	}
-
 	*memremaped_shm = va;
 out:
 	return pool;
 }
-
 static void soter_remove(struct soter_priv *soter)
 {
 	/*
@@ -272,13 +251,10 @@ static void soter_remove(struct soter_priv *soter)
 	 * other resources.
 	 */
 	isee_device_unregister(soter->teedev);
-
 	isee_shm_pool_free(soter->pool);
 	mutex_destroy(&soter->call_queue.mutex);
-
 	kfree(soter);
 }
-
 static int __init soter_driver_init(void)
 {
 	struct tee_shm_pool *pool = NULL;
@@ -286,31 +262,39 @@ static int __init soter_driver_init(void)
 	void *memremaped_shm = NULL;
 	int rc;
 
+	pr_err("SOTER_INIT: soter_driver_init started\n");
+
 	soter_priv = kzalloc(sizeof(*soter_priv), GFP_KERNEL);
 	if (!soter_priv) {
 		rc = -ENOMEM;
 		goto err;
 	}
-
 	pool = soter_config_shm_memremap(&memremaped_shm);
-	if (IS_ERR(pool))
-		return PTR_ERR(pool);
+	pr_err("SOTER_INIT: soter_config_shm_memremap returned pool=%p IS_ERR=%d IS_NULL=%d\n",
+		pool, IS_ERR(pool), (pool == NULL));
+	if (IS_ERR_OR_NULL(pool)) {
+		pr_err("SOTER_INIT: pool is %s! Aborting device registration.\n",
+			IS_ERR(pool) ? "ERR_PTR" : "NULL");
+		return IS_ERR(pool) ? PTR_ERR(pool) : -EINVAL;
+	}
 	soter_priv->pool = pool;
 	soter_priv->memremaped_shm = memremaped_shm;
-
 	teedev = isee_device_alloc(&soter_desc, NULL, pool, soter_priv);
+	pr_err("SOTER_INIT: isee_device_alloc returned teedev=%p IS_ERR=%d\n",
+		teedev, IS_ERR(teedev));
 	if (IS_ERR(teedev)) {
 		rc = PTR_ERR(teedev);
 		goto err;
 	}
 	soter_priv->teedev = teedev;
-
 	rc = isee_device_register(teedev);
+	pr_err("SOTER_INIT: isee_device_register returned rc=%d, teedev->pool=%p teedev->name=%s\n",
+		rc, teedev->pool, teedev->name);
 	if (rc)
 		goto err;
-
+	pr_err("SOTER_INIT: SUCCESS! teedev=%p pool=%p name=%s\n",
+		teedev, teedev->pool, teedev->name);
 	return 0;
-
 err:
 	if (soter_priv) {
 		/*
@@ -326,7 +310,6 @@ err:
 	return rc;
 }
 module_init(soter_driver_init);
-
 static void __exit soter_driver_exit(void)
 {
 	if (soter_priv)
@@ -334,7 +317,6 @@ static void __exit soter_driver_exit(void)
 	soter_priv = NULL;
 }
 module_exit(soter_driver_exit);
-
 #ifdef TEEI_DTS_RESERVED_MEM
 static int __init shared_mem_pool_setup(struct reserved_mem *rmem)
 {
@@ -344,7 +326,6 @@ static int __init shared_mem_pool_setup(struct reserved_mem *rmem)
 RESERVEDMEM_OF_DECLARE(soter_shared_mem, "microtrust,shared_mem",
 						shared_mem_pool_setup);
 #endif
-
 MODULE_AUTHOR("Microtrust");
 MODULE_DESCRIPTION("Soter driver");
 MODULE_SUPPORTED_DEVICE("");

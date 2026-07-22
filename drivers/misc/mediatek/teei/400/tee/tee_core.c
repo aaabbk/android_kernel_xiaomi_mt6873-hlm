@@ -727,12 +727,13 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	struct tee_shm *shm;
 	int fd;
 
-	pr_info("TEE_IOC_SHM_ALLOC: entered, ctx=%p\n", ctx);
+	pr_err("TEE_IOC_SHM_ALLOC: entered, ctx=%p teedev=%p teedev->name=%s teedev->pool=%p\n",
+		ctx, ctx->teedev, ctx->teedev->name, ctx->teedev->pool);
 
 	if (copy_from_user(&data, udata, sizeof(data)))
 		return -EFAULT;
 
-	pr_info("TEE_IOC_SHM_ALLOC: size=%llu flags=%u\n",
+	pr_err("TEE_IOC_SHM_ALLOC: size=%llu flags=%u\n",
 		(unsigned long long)data.size, data.flags);
 
 	if (data.flags)
@@ -741,12 +742,12 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	shm = isee_shm_alloc(ctx, data.size,
 			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm)) {
-		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_alloc failed: %ld\n",
-		       PTR_ERR(shm));
+		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_alloc failed: %ld, teedev->pool=%p\n",
+		       PTR_ERR(shm), ctx->teedev->pool);
 		return PTR_ERR(shm);
 	}
 
-	pr_info("TEE_IOC_SHM_ALLOC: shm=%p kaddr=%p paddr=%pa size=%zu\n",
+	pr_err("TEE_IOC_SHM_ALLOC: shm=%p kaddr=%p paddr=%pa size=%zu\n",
 		shm, shm->kaddr, &shm->paddr, shm->size);
 
 	fd = isee_shm_get_fd(shm);
@@ -763,7 +764,7 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 		return -EFAULT;
 	}
 
-	pr_info("TEE_IOC_SHM_ALLOC: success, fd=%d id=%d\n", fd, data.id);
+	pr_err("TEE_IOC_SHM_ALLOC: success, fd=%d id=%d\n", fd, data.id);
 	return fd;
 }
 /* === END ADDED: TEE_IOC_SHM_ALLOC handler === */
