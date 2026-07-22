@@ -14,7 +14,6 @@
 #include <tee_drv.h>
 #include <imsg_log.h>
 #include "tee_private.h"
-
 /* extra references appended to shm object for registered shared memory */
 struct tee_shm_dmabuf_ref {
 	struct tee_shm shm;
@@ -22,24 +21,17 @@ struct tee_shm_dmabuf_ref {
 	struct dma_buf_attachment *attach;
 	struct sg_table *sgt;
 };
-
 static void tee_shm_release(struct tee_shm *shm)
 {
 	struct tee_device *teedev = shm->teedev;
-
 	mutex_lock(&teedev->mutex);
-
 	if (shm->id >= 0)
 		idr_remove(&teedev->idr, shm->id);
-
 	if (shm->ctx)
 		list_del(&shm->link);
-
 	mutex_unlock(&teedev->mutex);
-
 	if (shm->flags & TEE_SHM_EXT_DMA_BUF) {
 		struct tee_shm_dmabuf_ref *ref;
-
 		ref = container_of(shm, struct tee_shm_dmabuf_ref, shm);
 		dma_buf_unmap_attachment(ref->attach, ref->sgt,
 					 DMA_BIDIRECTIONAL);
@@ -47,57 +39,45 @@ static void tee_shm_release(struct tee_shm *shm)
 		dma_buf_put(ref->dmabuf);
 	} else {
 		struct tee_shm_pool_mgr *poolm;
-
 		if ((shm->flags & TEE_SHM_DMA_BUF) || (shm->flags & TEE_SHM_DMA_KERN_BUF))
 			poolm = &teedev->pool->dma_buf_mgr;
 		else
 			poolm = &teedev->pool->private_mgr;
-
 		poolm->ops->free(poolm, shm);
 	}
-
 	kfree(shm);
 	isee_device_put(teedev);
 }
-
 static struct sg_table *tee_shm_op_map_dma_buf(struct dma_buf_attachment
 			*attach, enum dma_data_direction dir)
 {
 	return NULL;
 }
-
 static void tee_shm_op_unmap_dma_buf(struct dma_buf_attachment *attach,
 				     struct sg_table *table,
 				     enum dma_data_direction dir)
 {
 }
-
 static void tee_shm_op_release(struct dma_buf *dmabuf)
 {
 	struct tee_shm *shm = dmabuf->priv;
-
 	tee_shm_release(shm);
 }
-
 static void *tee_shm_op_kmap(struct dma_buf *dmabuf, unsigned long pgnum)
 {
 	return NULL;
 }
-
 static int tee_shm_op_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 {
 	struct tee_shm *shm = dmabuf->priv;
 	size_t size = vma->vm_end - vma->vm_start;
-
 	if (size > shm->size) {
 		IMSG_INFO("Invalid memory mapping size.\n");
 		return -EINVAL;
 	}
-
 	return remap_pfn_range(vma, vma->vm_start, shm->paddr >> PAGE_SHIFT,
 			       size, vma->vm_page_prot);
 }
-
 static struct dma_buf_ops tee_shm_dma_buf_ops = {
 	.map_dma_buf = tee_shm_op_map_dma_buf,
 	.unmap_dma_buf = tee_shm_op_unmap_dma_buf,
@@ -113,7 +93,6 @@ static struct dma_buf_ops tee_shm_dma_buf_ops = {
 #endif
 	.mmap = tee_shm_op_mmap,
 };
-
 struct tee_shm *isee_shm_kalloc(struct tee_context *ctx, size_t size, u32 flags)
 {
 	struct tee_device *teedev = ctx->teedev;
@@ -121,33 +100,27 @@ struct tee_shm *isee_shm_kalloc(struct tee_context *ctx, size_t size, u32 flags)
 	struct tee_shm *shm;
 	void *ret;
 	int rc;
-
 	if (!(flags & TEE_SHM_MAPPED)) {
 		IMSG_ERROR(
 			"only mapped allocations supported\n");
 		return ERR_PTR(-EINVAL);
 	}
-
 	if ((flags & ~(TEE_SHM_MAPPED | TEE_SHM_DMA_KERN_BUF))) {
 		IMSG_ERROR("invalid shm flags 0x%x", flags);
 		return ERR_PTR(-EINVAL);
 	}
-
 	if (!isee_device_get(teedev))
 		return ERR_PTR(-EINVAL);
-
 	if (!teedev->pool) {
 		/* teedev has been detached from driver */
 		ret = ERR_PTR(-EINVAL);
 		goto err_dev_put;
 	}
-
 	shm = kzalloc(sizeof(*shm), GFP_KERNEL);
 	if (!shm) {
 		ret = ERR_PTR(-ENOMEM);
 		goto err_dev_put;
 	}
-
 	shm->flags = flags;
 	shm->teedev = teedev;
 	shm->ctx = ctx;
@@ -155,13 +128,11 @@ struct tee_shm *isee_shm_kalloc(struct tee_context *ctx, size_t size, u32 flags)
 		poolm = &teedev->pool->dma_buf_mgr;
 	else
 		poolm = &teedev->pool->private_mgr;
-
 	rc = poolm->ops->alloc(poolm, shm, size);
 	if (rc) {
 		ret = ERR_PTR(rc);
 		goto err_kfree;
 	}
-
 	mutex_lock(&teedev->mutex);
 	shm->id = idr_alloc(&teedev->idr, shm, 1, 0, GFP_KERNEL);
 	mutex_unlock(&teedev->mutex);
@@ -169,13 +140,10 @@ struct tee_shm *isee_shm_kalloc(struct tee_context *ctx, size_t size, u32 flags)
 		ret = ERR_PTR(shm->id);
 		goto err_pool_free;
 	}
-
 	mutex_lock(&teedev->mutex);
 	list_add_tail(&shm->link, &ctx->list_shm);
 	mutex_unlock(&teedev->mutex);
-
 	return shm;
-
 err_pool_free:
 	poolm->ops->free(poolm, shm);
 err_kfree:
@@ -185,13 +153,11 @@ err_dev_put:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(isee_shm_kalloc);
-
 void isee_shm_kfree(struct tee_shm *shm)
 {
 	tee_shm_release(shm);
 }
 EXPORT_SYMBOL_GPL(isee_shm_kfree);
-
 /**
  * isee_shm_alloc() - Allocate shared memory
  * @ctx:	Context that allocates the shared memory
@@ -212,71 +178,88 @@ struct tee_shm *isee_shm_alloc_noid(struct tee_context *ctx, size_t size, u32 fl
 	void *ret;
 	int rc;
 
+	pr_err("isee_shm_alloc_noid: ENTER ctx=%p size=%zu flags=0x%x teedev=%p\n",
+		ctx, size, flags, teedev);
+
 	if (!(flags & TEE_SHM_MAPPED)) {
-		IMSG_ERROR(
-			"only mapped allocations supported\n");
+		pr_err("isee_shm_alloc_noid: FAIL check1 - TEE_SHM_MAPPED not set, flags=0x%x\n", flags);
 		return ERR_PTR(-EINVAL);
 	}
 
 	if ((flags & ~(TEE_SHM_MAPPED | TEE_SHM_DMA_BUF))) {
-		IMSG_ERROR("invalid shm flags 0x%x", flags);
+		pr_err("isee_shm_alloc_noid: FAIL check2 - invalid flags 0x%x\n", flags);
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (!isee_device_get(teedev))
+	if (!isee_device_get(teedev)) {
+		pr_err("isee_shm_alloc_noid: FAIL check3 - isee_device_get returned false! teedev->pool=%p flags=0x%x\n",
+			teedev->pool, teedev->flags);
 		return ERR_PTR(-EINVAL);
+	}
 
 	if (!teedev->pool) {
-		/* teedev has been detached from driver */
+		pr_err("isee_shm_alloc_noid: FAIL check4 - teedev->pool is NULL!\n");
 		ret = ERR_PTR(-EINVAL);
 		goto err_dev_put;
 	}
 
+	pr_err("isee_shm_alloc_noid: checks passed, pool=%p, allocating shm...\n",
+		teedev->pool);
+
 	shm = kzalloc(sizeof(*shm), GFP_KERNEL);
 	if (!shm) {
+		pr_err("isee_shm_alloc_noid: FAIL check5 - kzalloc failed\n");
 		ret = ERR_PTR(-ENOMEM);
 		goto err_dev_put;
 	}
-
 	shm->flags = flags;
 	shm->teedev = teedev;
 	shm->ctx = ctx;
+
 	if (flags & TEE_SHM_DMA_BUF)
 		poolm = &teedev->pool->dma_buf_mgr;
 	else
 		poolm = &teedev->pool->private_mgr;
 
+	pr_err("isee_shm_alloc_noid: poolm=%p poolm->ops=%p poolm->ops->alloc=%p\n",
+		poolm, poolm->ops, poolm->ops ? poolm->ops->alloc : NULL);
+
 	rc = poolm->ops->alloc(poolm, shm, size);
 	if (rc) {
+		pr_err("isee_shm_alloc_noid: FAIL check6 - poolm->ops->alloc returned %d\n", rc);
 		ret = ERR_PTR(rc);
 		goto err_kfree;
 	}
 
-	shm->id = -1;
+	pr_err("isee_shm_alloc_noid: alloc OK, shm->kaddr=%p shm->paddr=%pa shm->size=%zu\n",
+		shm->kaddr, &shm->paddr, shm->size);
 
+	shm->id = -1;
 	if (flags & TEE_SHM_DMA_BUF) {
 #if KERNEL_VERSION(4, 4, 1) <= LINUX_VERSION_CODE
 		DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
-
 		exp_info.ops = &tee_shm_dma_buf_ops;
 		exp_info.size = shm->size;
 		exp_info.flags = O_RDWR;
 		exp_info.priv = shm;
-
 		shm->dmabuf = dma_buf_export(&exp_info);
 #else
 		shm->dmabuf = dma_buf_export(shm, &tee_shm_dma_buf_ops,
 						shm->size, O_RDWR, NULL);
 #endif
 		if (IS_ERR(shm->dmabuf)) {
+			pr_err("isee_shm_alloc_noid: FAIL check7 - dma_buf_export failed: %ld\n",
+				PTR_ERR(shm->dmabuf));
 			ret = ERR_CAST(shm->dmabuf);
 			goto err_rem;
 		}
 	}
+
 	mutex_lock(&teedev->mutex);
 	list_add_tail(&shm->link, &ctx->list_shm);
 	mutex_unlock(&teedev->mutex);
 
+	pr_err("isee_shm_alloc_noid: SUCCESS shm=%p\n", shm);
 	return shm;
 err_rem:
 	poolm->ops->free(poolm, shm);
@@ -287,16 +270,19 @@ err_dev_put:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(isee_shm_alloc_noid);
-
 struct tee_shm *isee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags)
 {
 	struct tee_device *teedev = ctx->teedev;
 	struct tee_shm *shm = NULL;
 	void *ret = NULL;
 
+	pr_err("isee_shm_alloc: ENTER ctx=%p size=%zu flags=0x%x\n",
+		ctx, size, flags);
+
 	shm = isee_shm_alloc_noid(ctx, size, flags);
 	if (IS_ERR(shm)) {
-		IMSG_ERROR("Failed to alloc shm %lld\n", PTR_ERR(shm));
+		pr_err("isee_shm_alloc: isee_shm_alloc_noid failed: %ld\n",
+			PTR_ERR(shm));
 		return shm;
 	}
 
@@ -305,20 +291,18 @@ struct tee_shm *isee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags)
 	mutex_unlock(&teedev->mutex);
 
 	if (shm->id < 0) {
-		IMSG_ERROR("Failed to alloc shm_id %d\n", shm->id);
+		pr_err("isee_shm_alloc: idr_alloc failed: %d\n", shm->id);
 		ret = ERR_PTR(shm->id);
 		goto err_shm_free;
 	}
 
+	pr_err("isee_shm_alloc: SUCCESS shm=%p id=%d\n", shm, shm->id);
 	return shm;
-
 err_shm_free:
 	tee_shm_release(shm);
-
 	return ret;
 }
 EXPORT_SYMBOL_GPL(isee_shm_alloc);
-
 /**
  * isee_shm_get_fd() - Increase reference count and return file descriptor
  * @shm:	Shared memory handle
@@ -327,16 +311,13 @@ EXPORT_SYMBOL_GPL(isee_shm_alloc);
 int isee_shm_get_fd(struct tee_shm *shm)
 {
 	int fd;
-
 	if (!(shm->flags & TEE_SHM_DMA_BUF))
 		return -EINVAL;
-
 	fd = dma_buf_fd(shm->dmabuf, O_CLOEXEC);
 	if (fd >= 0)
 		get_dma_buf(shm->dmabuf);
 	return fd;
 }
-
 /**
  * isee_shm_free() - Free shared memory
  * @shm:	Handle to shared memory to free
@@ -356,7 +337,6 @@ void isee_shm_free(struct tee_shm *shm)
 		tee_shm_release(shm);
 }
 EXPORT_SYMBOL_GPL(isee_shm_free);
-
 /**
  * isee_shm_va2pa() - Get physical address of a virtual address
  * @shm:	Shared memory handle
@@ -373,12 +353,10 @@ int isee_shm_va2pa(struct tee_shm *shm, void *va, phys_addr_t *pa)
 		return -EINVAL;
 	if ((char *)va >= ((char *)shm->kaddr + shm->size))
 		return -EINVAL;
-
 	return isee_shm_get_pa(
 			shm, (unsigned long)va - (unsigned long)shm->kaddr, pa);
 }
 EXPORT_SYMBOL_GPL(isee_shm_va2pa);
-
 /**
  * isee_shm_pa2va() - Get virtual address of a physical address
  * @shm:	Shared memory handle
@@ -395,10 +373,8 @@ int isee_shm_pa2va(struct tee_shm *shm, phys_addr_t pa, void **va)
 		return -EINVAL;
 	if (pa >= (shm->paddr + shm->size))
 		return -EINVAL;
-
 	if (va) {
 		void *v = isee_shm_get_va(shm, pa - shm->paddr);
-
 		if (IS_ERR(v))
 			return PTR_ERR(v);
 		*va = v;
@@ -406,7 +382,6 @@ int isee_shm_pa2va(struct tee_shm *shm, phys_addr_t pa, void **va)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(isee_shm_pa2va);
-
 /**
  * isee_shm_get_va() - Get virtual address of a shared memory plus an offset
  * @shm:	Shared memory handle
@@ -423,7 +398,6 @@ void *isee_shm_get_va(struct tee_shm *shm, size_t offs)
 	return (char *)shm->kaddr + offs;
 }
 EXPORT_SYMBOL_GPL(isee_shm_get_va);
-
 /**
  * isee_shm_get_pa() - Get physical address of a shared memory plus an offset
  * @shm:	Shared memory handle
@@ -441,7 +415,6 @@ int isee_shm_get_pa(struct tee_shm *shm, size_t offs, phys_addr_t *pa)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(isee_shm_get_pa);
-
 /**
  * isee_shm_get_from_id() - Find shared memory object and increase reference
  * count
@@ -453,10 +426,8 @@ struct tee_shm *isee_shm_get_from_id(struct tee_context *ctx, int id)
 {
 	struct tee_device *teedev;
 	struct tee_shm *shm;
-
 	if (!ctx)
 		return ERR_PTR(-EINVAL);
-
 	teedev = ctx->teedev;
 	mutex_lock(&teedev->mutex);
 	shm = idr_find(&teedev->idr, id);
@@ -468,7 +439,6 @@ struct tee_shm *isee_shm_get_from_id(struct tee_context *ctx, int id)
 	return shm;
 }
 EXPORT_SYMBOL_GPL(isee_shm_get_from_id);
-
 /**
  * isee_shm_get_id() - Get id of a shared memory object
  * @shm:	Shared memory handle
@@ -479,7 +449,6 @@ int isee_shm_get_id(struct tee_shm *shm)
 	return shm->id;
 }
 EXPORT_SYMBOL_GPL(isee_shm_get_id);
-
 /**
  * isee_shm_put() - Decrease reference count on a shared memory handle
  * @shm:	Shared memory handle

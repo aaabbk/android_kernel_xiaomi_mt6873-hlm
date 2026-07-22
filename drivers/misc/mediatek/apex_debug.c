@@ -146,19 +146,6 @@ void apex_exec_hook(const char *filename)
 			current->pid, current->comm, filename);
 		return;
 	}
-
-	/* Also log ALL exec from pid 1 (init) or children of pid 1
-	 * to trace action chain. Only for standard binary paths. */
-	if (current->pid == 1 || (current->parent && current->parent->pid == 1)) {
-		if (strstr(filename, "/system/bin/") ||
-		    strstr(filename, "/vendor/bin/") ||
-		    strstr(filename, "/system/xbin/")) {
-			pr_err("APEX_EXEC_INIT: pid=%d ppid=%d exec='%s'\n",
-				current->pid,
-				current->parent ? current->parent->pid : 0,
-				filename);
-		}
-	}
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
@@ -167,13 +154,20 @@ EXPORT_SYMBOL(apex_exec_hook);
  * devices/files it tries to open during initialization. */
 void apex_open_hook(const char *filename, int fd)
 {
-	if (apex_is_km_pid(current->pid)) {
-		if (fd >= 0)
-			pr_err("APEX_KM: open OK pid=%d comm=%s file='%s' fd=%d\n",
-				current->pid, current->comm, filename, fd);
-		else
-			pr_err("APEX_KM: open FAIL pid=%d comm=%s file='%s' err=%d\n",
-				current->pid, current->comm, filename, fd);
+	if (!apex_is_km_pid(current->pid))
+		return;
+	/* Only log failures and important device opens.
+	 * Skip .so/libraries/properties to avoid flooding ring buffer. */
+	if (fd < 0) {
+		pr_err("APEX_KM: open FAIL pid=%d file='%s' err=%d\n",
+			current->pid, filename, fd);
+		return;
+	}
+	if (filename && (strstr(filename, "/dev/") ||
+	    strstr(filename, "isee_tee") ||
+	    strstr(filename, "teei"))) {
+		pr_err("APEX_KM: open OK pid=%d file='%s' fd=%d\n",
+			current->pid, filename, fd);
 	}
 }
 EXPORT_SYMBOL(apex_open_hook);
