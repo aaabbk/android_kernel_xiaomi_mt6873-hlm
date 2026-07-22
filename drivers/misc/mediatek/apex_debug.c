@@ -140,12 +140,9 @@ void apex_exec_hook(const char *filename)
 	/* Track keymaster HAL pid */
 	apex_record_km_pid(current->pid, filename);
 
-	/* Always log watched binaries */
-	if (apex_watch_exec(filename)) {
-		pr_err("APEX_EXEC: pid=%d comm=%s exec='%s'\n",
-			current->pid, current->comm, filename);
+	/* pid tracking only - no logging to avoid ring buffer flooding */
+	if (apex_watch_exec(filename))
 		return;
-	}
 }
 EXPORT_SYMBOL(apex_exec_hook);
 
@@ -156,18 +153,17 @@ void apex_open_hook(const char *filename, int fd)
 {
 	if (!apex_is_km_pid(current->pid))
 		return;
-	/* Only log failures and important device opens.
-	 * Skip .so/libraries/properties to avoid flooding ring buffer. */
-	if (fd < 0) {
-		pr_err("APEX_KM: open FAIL pid=%d file='%s' err=%d\n",
-			current->pid, filename, fd);
-		return;
-	}
-	if (filename && (strstr(filename, "/dev/") ||
-	    strstr(filename, "isee_tee") ||
+	/* Only log TEE device opens and TEE device failures.
+	 * Skip everything else (.so, properties, /sys, etc.) to avoid
+	 * flooding the kernel ring buffer. */
+	if (filename && (strstr(filename, "isee_tee") ||
 	    strstr(filename, "teei"))) {
-		pr_err("APEX_KM: open OK pid=%d file='%s' fd=%d\n",
-			current->pid, filename, fd);
+		if (fd < 0)
+			pr_err("APEX_KM: open FAIL pid=%d file='%s' err=%d\n",
+				current->pid, filename, fd);
+		else
+			pr_err("APEX_KM: open OK pid=%d file='%s' fd=%d\n",
+				current->pid, filename, fd);
 	}
 }
 EXPORT_SYMBOL(apex_open_hook);

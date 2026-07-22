@@ -3634,8 +3634,8 @@ static void binder_transaction(struct binder_proc *proc,
 #ifdef BINDER_WATCHDOG
 	e->code = tr->code;
 
-	/* Track key service registration/lookup to context manager.
-	 * Only log keymaster/keystore/hwservicemanager to avoid flooding. */
+	/* APEX_BINDER logging disabled - root cause found */
+#if 0
 	if (tr->target.handle == 0) {
 		const char *comm = proc->tsk->comm;
 		if (strstr(comm, "keystore") ||
@@ -3656,6 +3656,7 @@ static void binder_transaction(struct binder_proc *proc,
 				tr->target.handle, tr->code, proc->pid, proc->tsk->comm);
 		}
 	}
+#endif
 	/* fd 0 is also valid... set initial value to -1 */
 	e->fd = -1;
 #endif
@@ -4328,6 +4329,8 @@ err_bad_call_stack:
 err_empty_call_stack:
 err_dead_binder:
 err_invalid_target_handle:
+	/* APEX_BINDER logging disabled - root cause found */
+#if 0
 	{
 		const char *comm = proc->tsk->comm;
 		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
@@ -4337,6 +4340,7 @@ err_invalid_target_handle:
 				return_error, return_error_line);
 		}
 	}
+#endif
 	if (target_thread)
 		binder_thread_dec_tmpref(target_thread);
 	if (target_proc)
@@ -4616,9 +4620,8 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
-			/* Log ALL keymaster HAL transactions (not just first cmd in buffer).
-			 * This captures ADD_SERVICE (handle=0, code=3) even when it's
-			 * not the first command in the write_buffer. */
+			/* APEX_BINDER logging disabled - root cause found */
+#if 0
 			{
 				extern bool apex_is_km_pid(pid_t pid);
 				if (apex_is_km_pid(proc->pid)) {
@@ -4629,6 +4632,7 @@ static int binder_thread_write(struct binder_proc *proc,
 						proc->pid, proc->tsk->comm);
 				}
 			}
+#endif
 			binder_transaction(proc, thread, &tr.transaction_data,
 					   cmd == BC_REPLY_SG, tr.buffers_size);
 			break;
@@ -4640,7 +4644,8 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
-			/* Log ALL keymaster HAL transactions (not just first cmd in buffer). */
+			/* APEX_BINDER logging disabled - root cause found */
+#if 0
 			{
 				extern bool apex_is_km_pid(pid_t pid);
 				if (apex_is_km_pid(proc->pid)) {
@@ -4650,6 +4655,7 @@ static int binder_thread_write(struct binder_proc *proc,
 						proc->pid, proc->tsk->comm);
 				}
 			}
+#endif
 			binder_transaction(proc, thread, &tr,
 					   cmd == BC_REPLY, 0);
 			break;
@@ -5634,8 +5640,8 @@ static int binder_ioctl_write_read(struct file *filp,
 		     (u64)bwr.read_size, (u64)bwr.read_buffer);
 
 	if (bwr.write_size > 0) {
-		/* Track keymaster HAL's binder write commands.
-		 * BC_TRANSACTION includes ADD_SERVICE calls. */
+		/* APEX_BINDER logging disabled - root cause found */
+#if 0
 		{
 			extern bool apex_is_km_pid(pid_t pid);
 			if (apex_is_km_pid(current->pid)) {
@@ -5646,6 +5652,7 @@ static int binder_ioctl_write_read(struct file *filp,
 				}
 			}
 		}
+#endif
 		ret = binder_thread_write(proc, thread,
 					  bwr.write_buffer,
 					  bwr.write_size,
@@ -5804,8 +5811,8 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	unsigned int size = _IOC_SIZE(cmd);
 	void __user *ubuf = (void __user *)arg;
 
-	/* Track all binder ioctls from keymaster HAL to see what it does
-	 * after TEE initialization. Especially looking for ADD_SERVICE. */
+	/* APEX_BINDER logging disabled - root cause found */
+#if 0
 	{
 		extern bool apex_is_km_pid(pid_t pid);
 		if (apex_is_km_pid(current->pid) && cmd != BINDER_WRITE_READ) {
@@ -5821,6 +5828,7 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				cmd_name, cmd, current->pid, current->comm);
 		}
 	}
+#endif
 
 	/*pr_info("binder_ioctl: %d:%d %x %lx\n",
 			proc->pid, current->pid, cmd, arg);*/
@@ -6102,6 +6110,8 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		binder_dev = container_of(filp->private_data,
 					  struct binder_device, miscdev);
 	}
+	/* APEX_BINDER logging disabled - root cause found */
+#if 0
 	{
 		const char *comm = current->group_leader->comm;
 		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
@@ -6112,6 +6122,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 				binder_dev->context.name);
 		}
 	}
+#endif
 	refcount_inc(&binder_dev->ref);
 	proc->context = &binder_dev->context;
 	binder_alloc_init(&proc->alloc);

@@ -82,15 +82,8 @@ static struct dma_buf_ops tee_shm_dma_buf_ops = {
 	.map_dma_buf = tee_shm_op_map_dma_buf,
 	.unmap_dma_buf = tee_shm_op_unmap_dma_buf,
 	.release = tee_shm_op_release,
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
+	.map_atomic = tee_shm_op_kmap,
 	.map = tee_shm_op_kmap,
-#elif KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
-	.map_atomic = tee_shm_op_kmap_atomic,
-	.map = tee_shm_op_kmap,
-#else
-	.kmap_atomic = tee_shm_op_kmap_atomic,
-	.kmap = tee_shm_op_kmap,
-#endif
 	.mmap = tee_shm_op_mmap,
 };
 struct tee_shm *isee_shm_kalloc(struct tee_context *ctx, size_t size, u32 flags)
