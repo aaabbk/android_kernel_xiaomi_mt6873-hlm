@@ -727,19 +727,31 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	struct tee_shm *shm;
 	int fd;
 
+	pr_info("TEE_IOC_SHM_ALLOC: entered, ctx=%p\n", ctx);
+
 	if (copy_from_user(&data, udata, sizeof(data)))
 		return -EFAULT;
+
+	pr_info("TEE_IOC_SHM_ALLOC: size=%llu flags=%u\n",
+		(unsigned long long)data.size, data.flags);
 
 	if (data.flags)
 		return -EINVAL;
 
 	shm = isee_shm_alloc(ctx, data.size,
 			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
-	if (IS_ERR(shm))
+	if (IS_ERR(shm)) {
+		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_alloc failed: %ld\n",
+		       PTR_ERR(shm));
 		return PTR_ERR(shm);
+	}
+
+	pr_info("TEE_IOC_SHM_ALLOC: shm=%p kaddr=%p paddr=%pa size=%zu\n",
+		shm, shm->kaddr, &shm->paddr, shm->size);
 
 	fd = isee_shm_get_fd(shm);
 	if (fd < 0) {
+		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_get_fd failed: %d\n", fd);
 		isee_shm_free(shm);
 		return fd;
 	}
@@ -751,6 +763,7 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 		return -EFAULT;
 	}
 
+	pr_info("TEE_IOC_SHM_ALLOC: success, fd=%d id=%d\n", fd, data.id);
 	return fd;
 }
 /* === END ADDED: TEE_IOC_SHM_ALLOC handler === */
@@ -809,6 +822,7 @@ long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		retVal = tee_ioctl_set_hostname(ctx, uarg);
 		break;
 	default:
+		pr_err("tee_ioctl: unknown cmd=0x%x\n", cmd);
 		retVal = -EINVAL;
 	}
 
