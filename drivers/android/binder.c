@@ -3,7 +3,6 @@
  * Android IPC Subsystem
  *
  * Copyright (C) 2007-2008 Google, Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -146,8 +145,7 @@ enum {
 	BINDER_DEBUG_PRIORITY_CAP           = 1U << 13,
 	BINDER_DEBUG_SPINLOCKS              = 1U << 14,
 };
-static uint32_t binder_debug_mask = BINDER_DEBUG_USER_ERROR |
-	BINDER_DEBUG_FAILED_TRANSACTION | BINDER_DEBUG_DEAD_TRANSACTION;
+static uint32_t binder_debug_mask = 0;
 module_param_named(debug_mask, binder_debug_mask, uint, 0644);
 
 char *binder_devices_param = CONFIG_ANDROID_BINDER_DEVICES;
@@ -169,6 +167,7 @@ static int binder_set_stop_on_user_error(const char *val,
 module_param_call(stop_on_user_error, binder_set_stop_on_user_error,
 	param_get_int, &binder_stop_on_user_error, 0644);
 
+#ifdef DEBUG
 #define binder_debug(mask, x...) \
 	do { \
 		if (binder_debug_mask & mask) \
@@ -182,6 +181,16 @@ module_param_call(stop_on_user_error, binder_set_stop_on_user_error,
 		if (binder_stop_on_user_error) \
 			binder_stop_on_user_error = 2; \
 	} while (0)
+#else
+static inline void binder_debug(uint32_t mask, const char *fmt, ...)
+{
+}
+static inline void binder_user_error(const char *fmt, ...)
+{
+	if (binder_stop_on_user_error)
+		binder_stop_on_user_error = 2;
+}
+#endif
 
 #define to_flat_binder_object(hdr) \
 	container_of(hdr, struct flat_binder_object, hdr)
@@ -806,7 +815,7 @@ static void binder_print_bwdog(struct binder_transaction *t,
 	sub_t = timespec_sub(cur, *startime);
 
 	rtc_time_to_tm(t->tv.tv_sec, &tm);
-	pr_info("%d %s %d:%d to %d:%d %s %u.%03ld s (%s) dex %u start %lu.%03ld android %d-%02d-%02d %02d:%02d:%02d.%03lu\n",
+	pr_info_ratelimited("%d %s %d:%d to %d:%d %s %u.%03ld s (%s) dex %u start %lu.%03ld android %d-%02d-%02d %02d:%02d:%02d.%03lu\n",
 			t->debug_id, binder_wait_on_str[r],
 			t->fproc, t->fthrd, t->tproc, t->tthrd,
 			(cur_in && e) ? "over" : "total",
@@ -3633,30 +3642,6 @@ static void binder_transaction(struct binder_proc *proc,
 	e->context_name = proc->context->name;
 #ifdef BINDER_WATCHDOG
 	e->code = tr->code;
-
-	/* APEX_BINDER logging disabled - root cause found */
-#if 0
-	if (tr->target.handle == 0) {
-		const char *comm = proc->tsk->comm;
-		if (strstr(comm, "keystore") ||
-		    strstr(comm, "keymaster") ||
-		    strstr(comm, "hardwar") ||
-		    strstr(comm, "hwservicem") ||
-		    strstr(comm, "beanpod")) {
-			pr_err("APEX_BINDER: ctx_mgr txn from pid=%d comm=%s code=%u\n",
-				proc->pid, comm, tr->code);
-		}
-	}
-	/* Also log ALL transactions from keymaster HAL to see what handle
-	 * it sends BC_TRANSACTION_SG to. */
-	{
-		extern bool apex_is_km_pid(pid_t pid);
-		if (apex_is_km_pid(proc->pid) && tr->target.handle != 0) {
-			pr_err("APEX_BINDER: KM txn to handle=%u code=%u pid=%d comm=%s\n",
-				tr->target.handle, tr->code, proc->pid, proc->tsk->comm);
-		}
-	}
-#endif
 	/* fd 0 is also valid... set initial value to -1 */
 	e->fd = -1;
 #endif
@@ -3943,7 +3928,8 @@ static void binder_transaction(struct binder_proc *proc,
 #endif
 	t->buffer = binder_alloc_new_buf(&target_proc->alloc, tr->data_size,
 		tr->offsets_size, extra_buffers_size,
-		!reply && (t->flags & TF_ONE_WAY));
+		!reply && (t->flags & TF_ONE_WAY),
+		current->tgid);
 	if (IS_ERR(t->buffer)) {
 		/*
 		 * -ESRCH indicates VMA cleared. The target is dying.
@@ -4329,18 +4315,6 @@ err_bad_call_stack:
 err_empty_call_stack:
 err_dead_binder:
 err_invalid_target_handle:
-	/* APEX_BINDER logging disabled - root cause found */
-#if 0
-	{
-		const char *comm = proc->tsk->comm;
-		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
-		    strstr(comm, "hardwar") || strstr(comm, "beanpod")) {
-			pr_err("APEX_BINDER: FAILED from pid=%d comm=%s code=%u err=%d line=%d\n",
-				proc->pid, comm, tr->code,
-				return_error, return_error_line);
-		}
-	}
-#endif
 	if (target_thread)
 		binder_thread_dec_tmpref(target_thread);
 	if (target_proc)
@@ -4620,19 +4594,6 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
-			/* APEX_BINDER logging disabled - root cause found */
-#if 0
-			{
-				extern bool apex_is_km_pid(pid_t pid);
-				if (apex_is_km_pid(proc->pid)) {
-					const char *txn_type = (cmd == BC_REPLY_SG) ? "REPLY" : "TRANSACTION";
-					pr_err("APEX_BINDER: KM %s_SG handle=%u code=%u flags=%u pid=%d comm=%s\n",
-						txn_type, tr.transaction_data.target.handle,
-						tr.transaction_data.code, tr.transaction_data.flags,
-						proc->pid, proc->tsk->comm);
-				}
-			}
-#endif
 			binder_transaction(proc, thread, &tr.transaction_data,
 					   cmd == BC_REPLY_SG, tr.buffers_size);
 			break;
@@ -4644,18 +4605,6 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
-			/* APEX_BINDER logging disabled - root cause found */
-#if 0
-			{
-				extern bool apex_is_km_pid(pid_t pid);
-				if (apex_is_km_pid(proc->pid)) {
-					const char *txn_type = (cmd == BC_REPLY) ? "REPLY" : "TRANSACTION";
-					pr_err("APEX_BINDER: KM %s handle=%u code=%u flags=%u pid=%d comm=%s\n",
-						txn_type, tr.target.handle, tr.code, tr.flags,
-						proc->pid, proc->tsk->comm);
-				}
-			}
-#endif
 			binder_transaction(proc, thread, &tr,
 					   cmd == BC_REPLY, 0);
 			break;
@@ -5640,19 +5589,6 @@ static int binder_ioctl_write_read(struct file *filp,
 		     (u64)bwr.read_size, (u64)bwr.read_buffer);
 
 	if (bwr.write_size > 0) {
-		/* APEX_BINDER logging disabled - root cause found */
-#if 0
-		{
-			extern bool apex_is_km_pid(pid_t pid);
-			if (apex_is_km_pid(current->pid)) {
-				uint32_t bc_cmd = 0;
-				if (copy_from_user(&bc_cmd, (const void __user *)(unsigned long)bwr.write_buffer, sizeof(uint32_t)) == 0) {
-					pr_err("APEX_BINDER: WRITE pid=%d comm=%s bc_cmd=0x%x write_size=%zu\n",
-						current->pid, current->comm, bc_cmd, (size_t)bwr.write_size);
-				}
-			}
-		}
-#endif
 		ret = binder_thread_write(proc, thread,
 					  bwr.write_buffer,
 					  bwr.write_size,
@@ -5811,25 +5747,6 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	unsigned int size = _IOC_SIZE(cmd);
 	void __user *ubuf = (void __user *)arg;
 
-	/* APEX_BINDER logging disabled - root cause found */
-#if 0
-	{
-		extern bool apex_is_km_pid(pid_t pid);
-		if (apex_is_km_pid(current->pid) && cmd != BINDER_WRITE_READ) {
-			const char *cmd_name = "UNKNOWN";
-			switch (cmd) {
-			case BINDER_WRITE_READ: cmd_name = "WRITE_READ"; break;
-			case BINDER_SET_MAX_THREADS: cmd_name = "SET_MAX_THREADS"; break;
-			case BINDER_SET_CONTEXT_MGR: cmd_name = "SET_CONTEXT_MGR"; break;
-			case BINDER_THREAD_EXIT: cmd_name = "THREAD_EXIT"; break;
-			case BINDER_VERSION: cmd_name = "VERSION"; break;
-			}
-			pr_err("APEX_BINDER: ioctl cmd=%s(0x%x) pid=%d comm=%s\n",
-				cmd_name, cmd, current->pid, current->comm);
-		}
-	}
-#endif
-
 	/*pr_info("binder_ioctl: %d:%d %x %lx\n",
 			proc->pid, current->pid, cmd, arg);*/
 
@@ -5940,45 +5857,6 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 		break;
 	}
-	case BINDER_ENABLE_ONESHOT_SPN: {
-		__u32 enable;
-
-		if (copy_from_user(&enable, ubuf, sizeof(enable))) {
-			ret = -EFAULT;
-			goto err;
-		}
-		/* Stub: accept but no-op. This ioctl enables one-shot
-		 * synchronous pending notification in newer kernels.
-		 * Returning success prevents userspace breakage. */
-		break;
-	}
-	case BINDER_FREEZE: {
-		struct binder_freeze_info info;
-
-		if (copy_from_user(&info, ubuf, sizeof(info))) {
-			ret = -EFAULT;
-			goto err;
-		}
-		/* Stub: accept but no-op. Process freezing is an
-		 * optimization for cached app processes. */
-		break;
-	}
-	case BINDER_GET_FROZEN_INFO: {
-		struct binder_frozen_status_info info;
-
-		if (copy_from_user(&info, ubuf, sizeof(info))) {
-			ret = -EFAULT;
-			goto err;
-		}
-		/* Stub: report as not frozen (sync_recv=0, async_recv=0) */
-		info.sync_recv = 0;
-		info.async_recv = 0;
-		if (copy_to_user(ubuf, &info, sizeof(info))) {
-			ret = -EFAULT;
-			goto err;
-		}
-		break;
-	}
 	default:
 		ret = -EINVAL;
 		goto err;
@@ -5989,7 +5867,7 @@ err:
 		thread->looper_need_return = false;
 	wait_event_interruptible(binder_user_error_wait, binder_stop_on_user_error < 2);
 	if (ret && ret != -ERESTARTSYS)
-		pr_info("%d:%d ioctl %x %lx returned %d\n", proc->pid, current->pid, cmd, arg, ret);
+		pr_debug("%d:%d ioctl %x %lx returned %d\n", proc->pid, current->pid, cmd, arg, ret);
 err_unlocked:
 	trace_binder_ioctl_done(ret);
 	return ret;
@@ -6110,19 +5988,6 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		binder_dev = container_of(filp->private_data,
 					  struct binder_device, miscdev);
 	}
-	/* APEX_BINDER logging disabled - root cause found */
-#if 0
-	{
-		const char *comm = current->group_leader->comm;
-		if (strstr(comm, "keystore") || strstr(comm, "keymaster") ||
-		    strstr(comm, "hardwar") || strstr(comm, "hwservicem") ||
-		    strstr(comm, "beanpod") || strstr(comm, "servicemanager")) {
-			pr_err("APEX_BINDER: open pid=%d comm=%s dev=%s\n",
-				current->group_leader->pid, comm,
-				binder_dev->context.name);
-		}
-	}
-#endif
 	refcount_inc(&binder_dev->ref);
 	proc->context = &binder_dev->context;
 	binder_alloc_init(&proc->alloc);
