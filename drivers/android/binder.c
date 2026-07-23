@@ -71,6 +71,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/security.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 
 #include <uapi/linux/android/binder.h>
 #include <uapi/linux/sched/types.h>
@@ -3653,6 +3654,22 @@ static void binder_transaction(struct binder_proc *proc,
 	/* consider time zone. translate to android time */
 	e->tv.tv_sec -= (sys_tz.tz_minuteswest * 60);
 #endif
+	/* APEX_DBG: Log all synchronous transactions from system_server */
+	if (!reply && !(tr->flags & TF_ONE_WAY) &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_info("APEX_DBG_TXN: ENTRY code=%u from %s pid=%d:%d handle=%d data_size=%lld offsets_size=%lld\n",
+			tr->code, current->comm, proc->pid, thread->pid,
+			tr->target.handle, (u64)tr->data_size,
+			(u64)tr->offsets_size);
+	}
+	if (reply &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_info("APEX_DBG_TXN: REPLY from %s pid=%d:%d data_size=%lld offsets_size=%lld\n",
+			current->comm, proc->pid, thread->pid,
+			(u64)tr->data_size, (u64)tr->offsets_size);
+	}
 	if (reply) {
 		binder_inner_proc_lock(proc);
 		in_reply_to = thread->transaction_stack;
@@ -3920,6 +3937,18 @@ static void binder_transaction(struct binder_proc *proc,
 		}
 	}
 
+	/* APEX_DBG: Log target process info for system_server transactions */
+	if (!reply && !(tr->flags & TF_ONE_WAY) &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_info("APEX_DBG_TXN: TARGET code=%u -> proc=%s pid=%d node=%s debug_id=%d\n",
+			tr->code,
+			target_proc ? target_proc->tsk->comm : "NULL",
+			target_proc ? target_proc->pid : 0,
+			target_node ? "valid" : "NULL",
+			t->debug_id);
+	}
+
 	trace_binder_transaction(reply, t, target_node);
 
 #ifdef BINDER_WATCHDOG
@@ -3938,6 +3967,16 @@ static void binder_transaction(struct binder_proc *proc,
 		return_error = return_error_param == -ESRCH ?
 			BR_DEAD_REPLY : BR_FAILED_REPLY;
 		return_error_line = __LINE__;
+		/* APEX_DBG: Log buffer allocation failure */
+		if (!reply && !(tr->flags & TF_ONE_WAY) &&
+		    (strstr(current->comm, "system_server") ||
+		     strstr(current->comm, "system_process"))) {
+			pr_err("APEX_DBG_TXN: ALLOC_BUF_FAILED code=%u err=%d target=%s pid=%d data_size=%lld\n",
+				tr->code, return_error_param,
+				target_proc ? target_proc->tsk->comm : "NULL",
+				target_proc ? target_proc->pid : 0,
+				(u64)tr->data_size);
+		}
 		t->buffer = NULL;
 		goto err_binder_alloc_buf_failed;
 	}
@@ -3993,6 +4032,18 @@ static void binder_transaction(struct binder_proc *proc,
 		return_error_param = -EINVAL;
 		return_error_line = __LINE__;
 		goto err_bad_offset;
+	}
+	/* APEX_DBG: Log data copy success for system_server transactions */
+	if (!reply && !(tr->flags & TF_ONE_WAY) &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_info("APEX_DBG_TXN: DATA_OK code=%u buf=%px data_size=%zu offsets_size=%zu user_data=%px\n",
+			tr->code, t->buffer,
+			t->buffer->data_size, t->buffer->offsets_size,
+			t->buffer->user_data);
+		if (t->buffer->data_size < 4)
+			pr_warn("APEX_DBG_TXN: WARNING very small data_size=%zu for code=%u\n",
+				t->buffer->data_size, tr->code);
 	}
 	if (!IS_ALIGNED(extra_buffers_size, sizeof(u64))) {
 		binder_user_error("%d:%d got transaction with unaligned buffers size, %lld\n",
@@ -4270,6 +4321,15 @@ static void binder_transaction(struct binder_proc *proc,
 	 */
 	smp_wmb();
 	WRITE_ONCE(e->debug_id_done, t_debug_id);
+	/* APEX_DBG: Log successful transaction delivery */
+	if (!reply && !(tr->flags & TF_ONE_WAY) &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_info("APEX_DBG_TXN: DELIVERED code=%u debug_id=%d -> %s pid=%d OK\n",
+			tr->code, t->debug_id,
+			target_proc ? target_proc->tsk->comm : "NULL",
+			target_proc ? target_proc->pid : 0);
+	}
 	return;
 
 err_dead_proc_or_thread:
@@ -4329,6 +4389,16 @@ err_invalid_target_handle:
 		     proc->pid, thread->pid, return_error, return_error_param,
 		     (u64)tr->data_size, (u64)tr->offsets_size,
 		     return_error_line);
+
+	/* APEX_DBG: Log transaction failure for system_server */
+	if (!reply && !(tr->flags & TF_ONE_WAY) &&
+	    (strstr(current->comm, "system_server") ||
+	     strstr(current->comm, "system_process"))) {
+		pr_err("APEX_DBG_TXN: FAILED code=%u err=%d/%d line=%d from %s pid=%d:%d\n",
+			tr->code, return_error, return_error_param,
+			return_error_line, current->comm, proc->pid,
+			thread->pid);
+	}
 
 	{
 		struct binder_transaction_log_entry *fe;
@@ -5251,6 +5321,16 @@ retry:
 		if (t_from)
 			binder_thread_dec_tmpref(t_from);
 		t->buffer->allow_user_free = 1;
+		/* APEX_DBG: Log BR_REPLY delivery to system_server */
+		if (cmd == BR_REPLY &&
+		    (strstr(current->comm, "system_server") ||
+		     strstr(current->comm, "system_process"))) {
+			pr_info("APEX_DBG_TXN: BR_REPLY -> %s pid=%d:%d data_size=%zu offsets_size=%zu\n",
+				current->comm, proc->pid, thread->pid,
+				t->buffer->data_size, t->buffer->offsets_size);
+			if (t->buffer->data_size == 0)
+				pr_warn("APEX_DBG_TXN: WARNING BR_REPLY with data_size=0!\n");
+		}
 		if (cmd != BR_REPLY && !(t->flags & TF_ONE_WAY)) {
 			binder_inner_proc_lock(thread->proc);
 			t->to_parent = thread->transaction_stack;

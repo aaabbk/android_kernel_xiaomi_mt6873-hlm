@@ -438,6 +438,9 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	if (!binder_alloc_get_vma(alloc)) {
 		pr_err("%d: binder_alloc_buf, no vma\n",
 		       alloc->pid);
+		/* APEX_DBG: Enhanced VMA failure logging */
+		pr_err("APEX_DBG_ALLOC: no vma pid=%d buffer_size=%zd vma_vm_mm=%px\n",
+		       alloc->pid, alloc->buffer_size, alloc->vma_vm_mm);
 		return ERR_PTR(-ESRCH);
 	}
 
@@ -514,6 +517,10 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 		pr_err("allocated: %zd (num: %zd largest: %zd), free: %zd (num: %zd largest: %zd)\n",
 		       total_alloc_size, allocated_buffers, largest_alloc_size,
 		       total_free_size, free_buffers, largest_free_size);
+		/* APEX_DBG: Enhanced no-space logging */
+		pr_err("APEX_DBG_ALLOC: no space pid=%d req=%zd total_buf=%zd free=%zd free_async=%zd\n",
+		       alloc->pid, size, alloc->buffer_size,
+		       total_free_size, alloc->free_async_space);
 		return ERR_PTR(-ENOSPC);
 	}
 	if (n == NULL) {
@@ -534,8 +541,12 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 		end_page_addr = has_page_addr;
 	ret = binder_update_page_range(alloc, 1, (void __user *)
 		PAGE_ALIGN((uintptr_t)buffer->user_data), end_page_addr);
-	if (ret)
+	if (ret) {
+		/* APEX_DBG: Log page range update failure */
+		pr_err("APEX_DBG_ALLOC: page_range failed pid=%d ret=%d buf=%px size=%zd\n",
+		       alloc->pid, ret, buffer->user_data, size);
 		return ERR_PTR(ret);
+	}
 
 	if (buffer_size != size) {
 		struct binder_buffer *new_buffer;
