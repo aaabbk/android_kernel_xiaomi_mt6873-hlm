@@ -188,6 +188,21 @@ config DEBUG_INFO_DWARF4
 	  But it significantly improves the success of resolving
 	  variables in gdb on optimized code.
 
+config DEBUG_INFO_BTF
+	bool "Generate BTF typeinfo"
+	depends on DEBUG_INFO
+	depends on BPF_SYSCALL
+	help
+	  Generate BPF Type Format (BTF) type information from DWARF
+	  debug info. This allows BPF programs to access kernel type
+	  information using CO-RE (Compile Once - Run Everywhere),
+	  which is required by Android 14+ BPF programs.
+
+	  Requires pahole (from dwarves package) version 1.16 or later
+	  to be installed in the build environment.
+
+	  If unsure, say N.
+
 config GDB_SCRIPTS
 	bool "Provide GDB scripts for kernel debugging"
 	depends on DEBUG_INFO

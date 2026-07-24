@@ -332,6 +332,49 @@ fi
 
 kallsymso=""
 kallsyms_vmlinux=""
+btf_o=""
+
+# BTF generation (before kallsyms passes to ensure consistency)
+if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
+	info BTF vmlinux
+
+	PAHOLE=${PAHOLE:-pahole}
+	if ! command -v ${PAHOLE} >/dev/null 2>&1; then
+		echo >&2 "error: pahole is required for CONFIG_DEBUG_INFO_BTF"
+		echo >&2 "Install dwarves package (pahole >= 1.16)"
+		exit 1
+	fi
+
+	# Link a preliminary vmlinux for BTF generation
+	# DWARF info from compiled objects is available in the linked ELF
+	vmlinux_link "" .tmp_vmlinux_btf
+
+	# Generate BTF from DWARF debug info using pahole
+	# -J injects .BTF section into the ELF in-place
+	${PAHOLE} -J .tmp_vmlinux_btf 2>/dev/null
+	if [ $? -ne 0 ]; then
+		echo >&2 "error: pahole failed to generate BTF"
+		exit 1
+	fi
+
+	# Extract the .BTF section as raw binary
+	${OBJCOPY} -O binary --only-section=.BTF .tmp_vmlinux_btf .tmp_vmlinux.btf 2>/dev/null
+	if [ ! -s .tmp_vmlinux.btf ]; then
+		echo >&2 "error: BTF section is empty or missing"
+		exit 1
+	fi
+
+	# Create a .o file containing the BTF data in .BTF section
+	${OBJCOPY} --input binary --output elf64-littleaarch64 \
+		--binary-architecture aarch64 \
+		.tmp_vmlinux.btf .tmp_vmlinux.btf.o
+	${OBJCOPY} --rename-section .data=.BTF,alloc,load,readonly,contents \
+		.tmp_vmlinux.btf.o .tmp_vmlinux.btf.o
+
+	btf_o=".tmp_vmlinux.btf.o"
+	rm -f .tmp_vmlinux_btf
+fi
+
 if [ -n "${CONFIG_KALLSYMS}" ]; then
 
 	# kallsyms support
@@ -360,12 +403,12 @@ if [ -n "${CONFIG_KALLSYMS}" ]; then
 	kallsymso=.tmp_kallsyms2.o
 	kallsyms_vmlinux=.tmp_vmlinux2
 
-	# step 1
-	vmlinux_link "" .tmp_vmlinux1
+	# step 1 - includes BTF .o if present
+	vmlinux_link "${btf_o}" .tmp_vmlinux1
 	kallsyms .tmp_vmlinux1 .tmp_kallsyms1.o
 
-	# step 2
-	vmlinux_link .tmp_kallsyms1.o .tmp_vmlinux2
+	# step 2 - includes kallsyms1 and BTF
+	vmlinux_link ".tmp_kallsyms1.o ${btf_o}" .tmp_vmlinux2
 	kallsyms .tmp_vmlinux2 .tmp_kallsyms2.o
 
 	# step 3
@@ -376,14 +419,23 @@ if [ -n "${CONFIG_KALLSYMS}" ]; then
 		kallsymso=.tmp_kallsyms3.o
 		kallsyms_vmlinux=.tmp_vmlinux3
 
-		vmlinux_link .tmp_kallsyms2.o .tmp_vmlinux3
+		vmlinux_link ".tmp_kallsyms2.o ${btf_o}" .tmp_vmlinux3
 
 		kallsyms .tmp_vmlinux3 .tmp_kallsyms3.o
 	fi
 fi
 
+# Final link: include kallsyms and BTF objects
+extra_link_objs=""
+if [ -n "${kallsymso}" ]; then
+	extra_link_objs="${kallsymso}"
+fi
+if [ -n "${btf_o}" ]; then
+	extra_link_objs="${extra_link_objs} ${btf_o}"
+fi
+
 info LD vmlinux
-vmlinux_link "${kallsymso}" vmlinux
+vmlinux_link "${extra_link_objs}" vmlinux
 
 if [ -n "${CONFIG_BUILDTIME_EXTABLE_SORT}" ]; then
 	info SORTEX vmlinux

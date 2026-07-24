@@ -758,6 +758,13 @@
 		VMLINUX_SYMBOL(__stop_notes) = .;			\
 	}
 
+#define BTF								\
+	.BTF : AT(ADDR(.BTF) - LOAD_OFFSET) {				\
+		VMLINUX_SYMBOL(__start_BTF) = .;			\
+		*(.BTF)							\
+		VMLINUX_SYMBOL(__stop_BTF) = .;				\
+	}
+
 #define INIT_SETUP(initsetup_align)					\
 		. = ALIGN(initsetup_align);				\
 		VMLINUX_SYMBOL(__setup_start) = .;			\

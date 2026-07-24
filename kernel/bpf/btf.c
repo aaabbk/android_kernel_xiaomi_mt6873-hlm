@@ -16,6 +16,8 @@
 #include <linux/sort.h>
 #include <linux/bpf_verifier.h>
 #include <linux/btf.h>
+#include <linux/sysfs.h>
+#include <linux/kobject.h>
 
 /* BTF (BPF Type Format) is the meta data format which describes
  * the data types of BPF program/map.  Hence, it basically focus
@@ -2928,3 +2930,139 @@ u32 btf_id(const struct btf *btf)
 {
 	return btf->id;
 }
+
+#ifdef CONFIG_DEBUG_INFO_BTF
+/* BTF section boundaries, defined by the linker script */
+extern char __weak __start_BTF[];
+extern char __weak __stop_BTF[];
+
+/* Global pointer to the kernel's own BTF data */
+struct btf *btf_vmlinux __read_mostly;
+
+/* sysfs interface: /sys/kernel/btf/vmlinux */
+static struct kobject *btf_kobj;
+
+static ssize_t
+btf_vmlinux_read(struct file *file, struct kobject *kobj,
+		 struct bin_attribute *bin_attr,
+		 char *buf, loff_t off, size_t count)
+{
+	if (!btf_vmlinux)
+		return -ENODATA;
+
+	if (off >= btf_vmlinux->data_size)
+		return 0;
+
+	if (count > btf_vmlinux->data_size - off)
+		count = btf_vmlinux->data_size - off;
+
+	memcpy(buf, btf_vmlinux->data + off, count);
+	return count;
+}
+
+static struct bin_attribute bin_attr_btf_vmlinux __ro_after_init = {
+	.attr = { .name = "vmlinux", .mode = 0444 },
+	.read = btf_vmlinux_read,
+};
+
+/* Parse BTF data from kernel memory (as opposed to userspace) */
+static struct btf *btf_parse_kernel(void *data, u32 data_size)
+{
+	struct btf_verifier_env *env = NULL;
+	struct btf *btf = NULL;
+	u8 *data_copy;
+	int err;
+
+	env = kzalloc(sizeof(*env), GFP_KERNEL | __GFP_NOWARN);
+	if (!env)
+		return ERR_PTR(-ENOMEM);
+
+	btf = kzalloc(sizeof(*btf), GFP_KERNEL | __GFP_NOWARN);
+	if (!btf) {
+		err = -ENOMEM;
+		goto errout;
+	}
+	env->btf = btf;
+
+	data_copy = kvmalloc(data_size, GFP_KERNEL | __GFP_NOWARN);
+	if (!data_copy) {
+		err = -ENOMEM;
+		goto errout;
+	}
+
+	btf->data = data_copy;
+	btf->data_size = data_size;
+	memcpy(data_copy, data, data_size);
+
+	err = btf_parse_hdr(env);
+	if (err)
+		goto errout;
+
+	btf->nohdr_data = btf->data + btf->hdr.hdr_len;
+
+	err = btf_parse_str_sec(env);
+	if (err)
+		goto errout;
+
+	err = btf_parse_type_sec(env);
+	if (err)
+		goto errout;
+
+	btf_verifier_env_free(env);
+	refcount_set(&btf->refcnt, 1);
+	return btf;
+
+errout:
+	btf_verifier_env_free(env);
+	if (btf)
+		btf_free(btf);
+	return ERR_PTR(err);
+}
+
+static int __init btf_vmlinux_init(void)
+{
+	struct btf *btf;
+	int err;
+
+	if (!__start_BTF || __start_BTF == __stop_BTF)
+		return 0;
+
+	pr_info("Parsing kernel BTF...\n");
+
+	/* Create /sys/kernel/btf/ directory */
+	btf_kobj = kobject_create_and_add("btf", kernel_kobj);
+	if (!btf_kobj) {
+		pr_warn("Failed to create /sys/kernel/btf/ directory\n");
+		return -ENOMEM;
+	}
+
+	btf = btf_parse_kernel(__start_BTF, __stop_BTF - __start_BTF);
+	if (IS_ERR(btf)) {
+		pr_warn("failed to parse kernel BTF: %ld\n", PTR_ERR(btf));
+		return PTR_ERR(btf);
+	}
+
+	err = btf_alloc_id(btf);
+	if (err) {
+		pr_warn("failed to alloc BTF id: %d\n", err);
+		btf_free(btf);
+		return err;
+	}
+
+	btf_vmlinux = btf;
+	pr_info("Kernel BTF initialized successfully (%u types)\n",
+		btf->nr_types);
+
+	/* Create /sys/kernel/btf/vmlinux for userspace BTF access */
+	bin_attr_btf_vmlinux.size = btf->data_size;
+	err = sysfs_create_bin_file(btf_kobj, &bin_attr_btf_vmlinux);
+	if (err) {
+		pr_warn("Failed to register /sys/kernel/btf/vmlinux: %d\n",
+			err);
+		/* Non-fatal: BTF still accessible via BPF syscall */
+	}
+
+	return 0;
+}
+fs_initcall(btf_vmlinux_init);
+#endif /* CONFIG_DEBUG_INFO_BTF */
