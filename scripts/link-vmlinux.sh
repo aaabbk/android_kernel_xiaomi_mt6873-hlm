@@ -190,7 +190,7 @@ vmlinux_link()
 				-Wl,--start-group			\
 				${KBUILD_VMLINUX_MAIN}			\
 				${KBUILD_VMLINUX_LIBS}			\
-				-Wl,--end-group				\
+				-Wl,--end-group			\
 				${1}"
 		fi
 
@@ -365,8 +365,11 @@ if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
 	fi
 
 	# Create a .o file containing the BTF data in .BTF section
-	${OBJCOPY} --input binary --output elf64-littleaarch64 \
-		--binary-architecture aarch64 \
+	# Use short flags (-I, -O, -B) for compatibility with both
+	# GNU objcopy and llvm-objcopy (LLVM tools don't accept long-flag
+	# abbreviations like --input, --output)
+	${OBJCOPY} -I binary -O elf64-littleaarch64 \
+		-B aarch64 \
 		.tmp_vmlinux.btf .tmp_vmlinux.btf.o
 	${OBJCOPY} --rename-section .data=.BTF,alloc,load,readonly,contents \
 		.tmp_vmlinux.btf.o .tmp_vmlinux.btf.o
