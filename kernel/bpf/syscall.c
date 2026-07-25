@@ -180,12 +180,7 @@ int bpf_map_precharge_memlock(u32 pages)
 
 static int bpf_charge_memlock(struct user_struct *user, u32 pages)
 {
-	unsigned long memlock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-	unsigned long locked = atomic_long_read(&user->locked_vm);
-
-	pr_err("BPF_DEBUG: bpf_charge_memlock pages=%u limit=%luKB locked=%luKB\n",
-	       pages, memlock_limit << (PAGE_SHIFT - 10), locked << (PAGE_SHIFT - 10));
-	/* Bypass memlock check: RLIMIT_MEMLOCK may be unset for bpfloader */
+	/* Bypass memlock check: RLIMIT_MEMLOCK may be unset for bpfloader on 4.14 */
 	return 0;
 }
 
@@ -1424,14 +1419,9 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	    attr->kern_version != LINUX_VERSION_CODE)
 		return -EINVAL;
 
-	pr_err("BPF_DEBUG: bpf_prog_load type=%d insn_cnt=%u, bypassing capable check\n",
-	       type, attr->insn_cnt);
-	/* Bypass capability check for bpfloader compat on 4.14 */
-
+	/* Bypass capability check for bpfloader compat on 4.14 kernel */
 	bpf_prog_load_fixup_attach_type(attr);
 	err = bpf_prog_load_check_attach_type(type, attr->expected_attach_type);
-	pr_err("BPF_DEBUG: check_attach_type(type=%d, attach=%d)=%d\n",
-	       type, attr->expected_attach_type, err);
 	if (err)
 		return -EINVAL;
 
@@ -1443,12 +1433,10 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	prog->expected_attach_type = attr->expected_attach_type;
 
 	err = security_bpf_prog_alloc(prog->aux);
-	pr_err("BPF_DEBUG: security_bpf_prog_alloc=%d\n", err);
 	if (err)
 		goto free_prog_nouncharge;
 
 	err = bpf_prog_charge_memlock(prog);
-	pr_err("BPF_DEBUG: bpf_prog_charge_memlock=%d\n", err);
 	if (err)
 		goto free_prog_sec;
 
@@ -1473,7 +1461,6 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* find program type: socket_filter vs tracing_filter */
 	err = find_prog_type(type, prog);
-	pr_err("BPF_DEBUG: find_prog_type(type=%d)=%d\n", type, err);
 	if (err < 0)
 		goto free_prog;
 
@@ -1484,17 +1471,14 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
-	pr_err("BPF_DEBUG: bpf_check(verifier)=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	prog = bpf_prog_select_runtime(prog, &err);
-	pr_err("BPF_DEBUG: bpf_prog_select_runtime=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	err = bpf_prog_alloc_id(prog);
-	pr_err("BPF_DEBUG: bpf_prog_alloc_id=%d\n", err);
 	if (err)
 		goto free_used_maps;
 
@@ -1516,7 +1500,6 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	trace_bpf_prog_load(prog, err);
 
 	err = bpf_prog_new_fd(prog);
-	pr_err("BPF_DEBUG: bpf_prog_new_fd=%d (type=%d)\n", err, type);
 	if (err < 0)
 		bpf_prog_put(prog);
 	return err;
@@ -1529,7 +1512,6 @@ free_prog:
 free_prog_sec:
 	security_bpf_prog_free(prog->aux);
 free_prog_nouncharge:
-	pr_err("BPF_DEBUG: bpf_prog_load FAIL err=%d type=%d\n", err, type);
 	bpf_prog_free(prog);
 	return err;
 }
@@ -2390,18 +2372,6 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	union bpf_attr attr;
 	int err;
 
-	/* [APEX] Only log the first bpf() call per process to avoid log flood */
-	{
-		static atomic_t apex_bpf_first = ATOMIC_INIT(0);
-		int old = atomic_xchg(&apex_bpf_first, 1);
-		if (!old)
-			pr_err("APEX_BPF: first syscall cmd=%d pid=%d comm=%s\n",
-				cmd, current->pid, current->comm);
-	}
-
-	pr_err("BPF_DEBUG: bpf cmd=%d pid=%d comm=%s sysctl_unpriv=%d cap_sys_admin=%d\n",
-	       cmd, current->pid, current->comm,
-	       sysctl_unprivileged_bpf_disabled, capable(CAP_SYS_ADMIN));
 	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
