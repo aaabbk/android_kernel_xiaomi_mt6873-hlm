@@ -1429,7 +1429,10 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	/* Bypass capability check for bpfloader compat on 4.14 */
 
 	bpf_prog_load_fixup_attach_type(attr);
-	if (bpf_prog_load_check_attach_type(type, attr->expected_attach_type))
+	err = bpf_prog_load_check_attach_type(type, attr->expected_attach_type);
+	pr_err("BPF_DEBUG: check_attach_type(type=%d, attach=%d)=%d\n",
+	       type, attr->expected_attach_type, err);
+	if (err)
 		return -EINVAL;
 
 	/* plain bpf_prog allocation */
@@ -1440,10 +1443,12 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	prog->expected_attach_type = attr->expected_attach_type;
 
 	err = security_bpf_prog_alloc(prog->aux);
+	pr_err("BPF_DEBUG: security_bpf_prog_alloc=%d\n", err);
 	if (err)
 		goto free_prog_nouncharge;
 
 	err = bpf_prog_charge_memlock(prog);
+	pr_err("BPF_DEBUG: bpf_prog_charge_memlock=%d\n", err);
 	if (err)
 		goto free_prog_sec;
 
@@ -1468,6 +1473,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* find program type: socket_filter vs tracing_filter */
 	err = find_prog_type(type, prog);
+	pr_err("BPF_DEBUG: find_prog_type(type=%d)=%d\n", type, err);
 	if (err < 0)
 		goto free_prog;
 
@@ -1478,14 +1484,17 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
+	pr_err("BPF_DEBUG: bpf_check(verifier)=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	prog = bpf_prog_select_runtime(prog, &err);
+	pr_err("BPF_DEBUG: bpf_prog_select_runtime=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	err = bpf_prog_alloc_id(prog);
+	pr_err("BPF_DEBUG: bpf_prog_alloc_id=%d\n", err);
 	if (err)
 		goto free_used_maps;
 
@@ -1507,6 +1516,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	trace_bpf_prog_load(prog, err);
 
 	err = bpf_prog_new_fd(prog);
+	pr_err("BPF_DEBUG: bpf_prog_new_fd=%d (type=%d)\n", err, type);
 	if (err < 0)
 		bpf_prog_put(prog);
 	return err;
@@ -1519,6 +1529,7 @@ free_prog:
 free_prog_sec:
 	security_bpf_prog_free(prog->aux);
 free_prog_nouncharge:
+	pr_err("BPF_DEBUG: bpf_prog_load FAIL err=%d type=%d\n", err, type);
 	bpf_prog_free(prog);
 	return err;
 }
