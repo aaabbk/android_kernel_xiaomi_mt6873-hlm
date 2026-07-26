@@ -164,6 +164,26 @@ EXPORT_SYMBOL(aee_kernel_reminding_api);
 void aed_md_exception_api(const int *log, int log_size, const int *phy,
 			int phy_size, const char *detail, const int db_opt)
 {
+	/*
+	 * Disable AED notification for modem exceptions to prevent system reboot.
+	 *
+	 * Analysis of the official (stock) kernel binary confirms that
+	 * aed_md_exception_api is compiled in but has ZERO callers across the
+	 * entire kernel. The official kernel never triggers AED for modem
+	 * exceptions, so the modem crash is logged by the CCCI/ECCCI driver
+	 * itself without involving the AEE daemon.
+	 *
+	 * Root cause: modem firmware assertion at
+	 *   custom/protocol/common/ps/custom_config_check.c:138
+	 * (PLMN/MCC/MNC NVRAM validation), which triggers this AED path and
+	 * causes the AEE daemon to reboot the system.
+	 *
+	 * Making this function a no-op covers all 24 call sites across:
+	 *   mdee_dumper_v1/v2/v3/v5.c, ccci_fsm_ee.c,
+	 *   ccci_hif_cldma.c, ccci_hif_dpmaif.c, modem_sys1.c
+	 */
+	return;
+
 #ifdef CONFIG_MTK_AEE_AED
 	pr_debug("%s\n", __func__);
 	if (g_aee_api) {
