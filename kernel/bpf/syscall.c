@@ -540,18 +540,22 @@ static int map_create(union bpf_attr *attr)
 	}
 
 	err = security_bpf_map_alloc(map);
+	pr_err("BPF_DBG: map_alloc_security(type=%d)=%d\n", attr->map_type, err);
 	if (err)
 		goto free_map_nouncharge;
 
 	err = bpf_map_init_memlock(map);
+	pr_err("BPF_DBG: map_init_memlock=%d\n", err);
 	if (err)
 		goto free_map_sec;
 
 	err = bpf_map_alloc_id(map);
+	pr_err("BPF_DBG: map_alloc_id=%d\n", err);
 	if (err)
 		goto free_map;
 
 	err = bpf_map_new_fd(map, f_flags);
+	pr_err("BPF_DBG: map_new_fd=%d\n", err);
 	if (err < 0) {
 		/* failed to allocate fd.
 		 * bpf_map_put_with_uref() is needed because the above
@@ -1403,8 +1407,11 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 		return -EINVAL;
 
 	/* Bypass capability check for bpfloader compat on 4.14 kernel */
+	pr_err("BPF_DBG: prog_load type=%d insn=%u attach=%d\n",
+	       type, attr->insn_cnt, attr->expected_attach_type);
 	bpf_prog_load_fixup_attach_type(attr);
 	err = bpf_prog_load_check_attach_type(type, attr->expected_attach_type);
+	pr_err("BPF_DBG: check_attach_type=%d\n", err);
 	if (err)
 		return -EINVAL;
 
@@ -1416,10 +1423,12 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	prog->expected_attach_type = attr->expected_attach_type;
 
 	err = security_bpf_prog_alloc(prog->aux);
+	pr_err("BPF_DBG: security_bpf_prog_alloc=%d\n", err);
 	if (err)
 		goto free_prog_nouncharge;
 
 	err = bpf_prog_charge_memlock(prog);
+	pr_err("BPF_DBG: prog_charge_memlock=%d\n", err);
 	if (err)
 		goto free_prog_sec;
 
@@ -1444,6 +1453,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* find program type: socket_filter vs tracing_filter */
 	err = find_prog_type(type, prog);
+	pr_err("BPF_DBG: find_prog_type(%d)=%d\n", type, err);
 	if (err < 0)
 		goto free_prog;
 
@@ -1454,14 +1464,17 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
+	pr_err("BPF_DBG: bpf_check(verifier)=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	prog = bpf_prog_select_runtime(prog, &err);
+	pr_err("BPF_DBG: select_runtime=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	err = bpf_prog_alloc_id(prog);
+	pr_err("BPF_DBG: alloc_id=%d\n", err);
 	if (err)
 		goto free_used_maps;
 
@@ -1483,18 +1496,22 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	trace_bpf_prog_load(prog, err);
 
 	err = bpf_prog_new_fd(prog);
+	pr_err("BPF_DBG: prog_new_fd=%d\n", err);
 	if (err < 0)
 		bpf_prog_put(prog);
 	return err;
 
 free_used_maps:
+	pr_err("BPF_DBG: FAIL at free_used_maps err=%d\n", err);
 	bpf_prog_free_linfo(prog);
 	free_used_maps(prog->aux);
 free_prog:
+	pr_err("BPF_DBG: FAIL at free_prog err=%d\n", err);
 	bpf_prog_uncharge_memlock(prog);
 free_prog_sec:
 	security_bpf_prog_free(prog->aux);
 free_prog_nouncharge:
+	pr_err("BPF_DBG: FAIL at nouncharge err=%d type=%d\n", err, type);
 	bpf_prog_free(prog);
 	return err;
 }
@@ -2355,6 +2372,11 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	union bpf_attr attr;
 	int err;
 
+	pr_err("BPF_DBG: cmd=%d pid=%d comm=%s cap_sys=%d cap_net=%d unpriv=%d\n",
+	       cmd, current->pid, current->comm,
+	       capable(CAP_SYS_ADMIN), capable(CAP_NET_ADMIN),
+	       sysctl_unprivileged_bpf_disabled);
+
 	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
@@ -2369,6 +2391,7 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		return -EFAULT;
 
 	err = security_bpf(cmd, &attr, size);
+	pr_err("BPF_DBG: security_bpf(cmd=%d)=%d\n", cmd, err);
 	if (err < 0)
 		return err;
 

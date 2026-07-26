@@ -1719,7 +1719,9 @@ int security_audit_rule_match(u32 secid, u32 field, u32 op, void *lsmrule,
 #ifdef CONFIG_BPF_SYSCALL
 int security_bpf(int cmd, union bpf_attr *attr, unsigned int size)
 {
-	return call_int_hook(bpf, 0, cmd, attr, size);
+	int ret = call_int_hook(bpf, 0, cmd, attr, size);
+	pr_err("BPF_DBG: security_bpf(cmd=%d) selinux_ret=%d\n", cmd, ret);
+	return ret;
 }
 int security_bpf_map(struct bpf_map *map, fmode_t fmode)
 {

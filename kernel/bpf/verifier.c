@@ -995,6 +995,7 @@ static int check_subprogs(struct bpf_verifier_env *env)
 			continue;
 		if (!env->allow_ptr_leaks) {
 			verbose(env, "function calls to other bpf functions are allowed for root only\n");
+			pr_err("BPF_DBG: verifier EPERM allow_ptr_leaks=false\n");
 			return -EPERM;
 		}
 		if (bpf_prog_is_dev_bound(env->prog->aux)) {
@@ -7192,6 +7193,8 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 skip_full_check:
 	while (!pop_stack(env, NULL, NULL));
 	free_states(env);
+
+	pr_err("BPF_DBG: verifier ret=%d after do_check\n", ret);
 
 	if (ret == 0)
 		sanitize_dead_code(env);
