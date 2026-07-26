@@ -7176,14 +7176,17 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 	env->allow_ptr_leaks = true; /* bypass capable for bpfloader compat */
 
 	ret = check_cfg(env);
+	pr_err("BPF_DBG: verifier check_cfg=%d\n", ret);
 	if (ret < 0)
 		goto skip_full_check;
 
 	ret = check_btf_info(env, attr, uattr);
+	pr_err("BPF_DBG: verifier check_btf_info=%d\n", ret);
 	if (ret < 0)
 		goto skip_full_check;
 
 	ret = do_check(env);
+	pr_err("BPF_DBG: verifier do_check=%d\n", ret);
 	if (env->cur_state) {
 		free_verifier_state(env->cur_state, true);
 		env->cur_state = NULL;
@@ -7291,12 +7294,14 @@ int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
 		goto skip_full_check;
 
 	ret = check_cfg(env);
+	pr_err("BPF_DBG: verifier check_cfg=%d\n", ret);
 	if (ret < 0)
 		goto skip_full_check;
 
 	env->allow_ptr_leaks = true; /* bypass capable for bpfloader compat */
 
 	ret = do_check(env);
+	pr_err("BPF_DBG: verifier do_check=%d\n", ret);
 	if (env->cur_state) {
 		free_verifier_state(env->cur_state, true);
 		env->cur_state = NULL;

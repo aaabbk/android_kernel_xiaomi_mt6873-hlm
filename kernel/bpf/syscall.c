@@ -1346,6 +1346,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 		}
 	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 		switch (expected_attach_type) {
+		case 0: /* BPF_ATTACH_TYPE_UNSPEC - allow for bpfloader compat */
 		case BPF_CGROUP_SETSOCKOPT:
 		case BPF_CGROUP_GETSOCKOPT:
 			return 0;
@@ -1406,6 +1407,8 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	/* Bypass capability check for bpfloader compat on 4.14 kernel */
 	bpf_prog_load_fixup_attach_type(attr);
 	err = bpf_prog_load_check_attach_type(type, attr->expected_attach_type);
+	pr_err("BPF_DBG: prog_load type=%d insn=%u attach=%d check_attach=%d\n",
+	       type, attr->insn_cnt, attr->expected_attach_type, err);
 	if (err)
 		return -EINVAL;
 
@@ -1417,10 +1420,12 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	prog->expected_attach_type = attr->expected_attach_type;
 
 	err = security_bpf_prog_alloc(prog->aux);
+	pr_err("BPF_DBG: security_bpf_prog_alloc=%d\n", err);
 	if (err)
 		goto free_prog_nouncharge;
 
 	err = bpf_prog_charge_memlock(prog);
+	pr_err("BPF_DBG: prog_charge_memlock=%d\n", err);
 	if (err)
 		goto free_prog_sec;
 
@@ -1445,6 +1450,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* find program type: socket_filter vs tracing_filter */
 	err = find_prog_type(type, prog);
+	pr_err("BPF_DBG: find_prog_type(%d)=%d\n", type, err);
 	if (err < 0)
 		goto free_prog;
 
@@ -1455,14 +1461,17 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
+	pr_err("BPF_DBG: bpf_check(verifier)=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	prog = bpf_prog_select_runtime(prog, &err);
+	pr_err("BPF_DBG: select_runtime=%d\n", err);
 	if (err < 0)
 		goto free_used_maps;
 
 	err = bpf_prog_alloc_id(prog);
+	pr_err("BPF_DBG: alloc_id=%d\n", err);
 	if (err)
 		goto free_used_maps;
 
@@ -1484,6 +1493,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	trace_bpf_prog_load(prog, err);
 
 	err = bpf_prog_new_fd(prog);
+	pr_err("BPF_DBG: prog_new_fd=%d\n", err);
 	if (err < 0)
 		bpf_prog_put(prog);
 	return err;
@@ -2355,8 +2365,10 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 {
 	union bpf_attr attr;
 	int err;
-	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN))
+	if (sysctl_unprivileged_bpf_disabled && !capable(CAP_SYS_ADMIN)) {
+		pr_err("BPF_DBG: cmd=%d EPERM unpriv=%d cap_sys=0\n", cmd, sysctl_unprivileged_bpf_disabled);
 		return -EPERM;
+	}
 
 	err = bpf_check_uarg_tail_zero(uattr, sizeof(attr), size);
 	if (err)
@@ -2368,9 +2380,16 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	if (copy_from_user(&attr, uattr, size) != 0)
 		return -EFAULT;
 
+	if (cmd == 5)
+		pr_err("BPF_DBG: cmd=%d pid=%d cap_sys=%d cap_net=%d unpriv=%d\n",
+		       cmd, current->pid, capable(CAP_SYS_ADMIN), capable(CAP_NET_ADMIN),
+		       sysctl_unprivileged_bpf_disabled);
+
 	err = security_bpf(cmd, &attr, size);
-	if (err < 0)
+	if (err < 0) {
+		pr_err("BPF_DBG: security_bpf(cmd=%d)=%d\n", cmd, err);
 		return err;
+	}
 
 	switch (cmd) {
 	case BPF_MAP_CREATE:
