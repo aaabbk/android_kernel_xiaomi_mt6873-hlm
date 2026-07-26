@@ -167,14 +167,7 @@ void bpf_map_init_from_attr(struct bpf_map *map, union bpf_attr *attr)
 
 int bpf_map_precharge_memlock(u32 pages)
 {
-	struct user_struct *user = get_current_user();
-	unsigned long memlock_limit, cur;
-
-	memlock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-	cur = atomic_long_read(&user->locked_vm);
-	free_uid(user);
-	if (cur + pages > memlock_limit)
-		return -EPERM;
+	/* Bypass memlock check: RLIMIT_MEMLOCK may be unset for bpfloader on 4.14 */
 	return 0;
 }
 
@@ -1051,17 +1044,7 @@ static void free_used_maps(struct bpf_prog_aux *aux)
 
 int __bpf_prog_charge(struct user_struct *user, u32 pages)
 {
-	unsigned long memlock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-	unsigned long user_bufs;
-
-	if (user) {
-		user_bufs = atomic_long_add_return(pages, &user->locked_vm);
-		if (user_bufs > memlock_limit) {
-			atomic_long_sub(pages, &user->locked_vm);
-			return -EPERM;
-		}
-	}
-
+	/* Bypass memlock check: RLIMIT_MEMLOCK may be unset for bpfloader on 4.14 */
 	return 0;
 }
 
