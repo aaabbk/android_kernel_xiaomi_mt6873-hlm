@@ -1420,6 +1420,14 @@ void sync_ulposc_cali_data_to_scp(void)
 		usleep_range(2000, 3000);
 	}
 
+	/* Force ULPOSC clock switch: SCP firmware fails to switch CLK_SW_SEL
+	 * from 0x100 (default) to ULPOSC. Write 0x1 to request ULPOSC source.
+	 * Hardware sets CLK_SW_SEL_O_ULPOSC_CORE/PERI (bits[11:10]) when done.
+	 */
+	DRV_WriteReg32(CLK_SW_SEL, 0x1);
+	/* Wait for hardware to process the clock switch request */
+	usleep_range(2000, 3000);
+
 	/* check if SCP clock is switched to ULPOSC */
 	if ((((DRV_Reg32(CLK_SW_SEL)>>CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
 		 (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
