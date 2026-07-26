@@ -1335,6 +1335,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 		}
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
 		switch (expected_attach_type) {
+		case 0: /* BPF_ATTACH_TYPE_UNSPEC - allow for bpfloader compat */
 		case BPF_CGROUP_INET4_BIND:
 		case BPF_CGROUP_INET6_BIND:
 		case BPF_CGROUP_INET4_CONNECT:
