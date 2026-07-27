@@ -168,7 +168,6 @@ extern int scp_dvfs_flag;
 #ifdef ULPOSC_CALI_BY_AP
 extern void ulposc_cali_init(void);
 extern void sync_ulposc_cali_data_to_scp(void);
-extern void scp_force_clk_to_ulposc(void);
 #endif
 
 #endif  /* __SCP_DVFS_H__ */

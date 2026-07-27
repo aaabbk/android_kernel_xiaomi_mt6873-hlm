@@ -1221,37 +1221,23 @@ static void turn_onoff_clk_high(int id, int is_on)
 {
 	pr_debug("%s(%d, %d)\n", __func__, id, is_on);
 
-	if (is_on) {
-		/* turn on ulposc */
-		DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
-		if (id == ULPOSC_2)
-			DRV_ClrReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
+	/*
+	 * Official kernel uses SMC call to ATF for ULPOSC clock control.
+	 * Direct AP-side register access is replaced with SMC calls:
+	 *   ON  = MTK_SIP_KERNEL_SCP_DVFS_CTRL, sub-cmd 0x40000000
+	 *   OFF = MTK_SIP_KERNEL_SCP_DVFS_CTRL, sub-cmd 0x50000000
+	 * ATF handles the actual register writes in EL3 secure world.
+	 * This matches the official kernel's communication protocol that
+	 * the SCP firmware expects.
+	 */
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4,
+		       is_on ? 0x40000000 : 0x50000000, 0);
 
-		/* wait settle time */
-		udelay(150);
-
-		/* turn on CG */
-		if (id == ULPOSC_2)
-			DRV_SetReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
-		else
-			DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_CG_BIT));
-	} else {
-		/* turn off CG */
-		if (id == ULPOSC_2)
-			DRV_ClrReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
-		else
-			DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_CG_BIT));
-
-		udelay(50);
-
-		/* turn off ULPOSC */
-		if (id == ULPOSC_2)
-			DRV_SetReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
-		else
-			DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
-	}
-
-	udelay(50);
+	/* Allow oscillator to stabilize after enable */
+	if (is_on)
+		udelay(200);
+	else
+		udelay(100);
 }
 
 static void set_ulposc_cali_value(unsigned int cali_val)
@@ -1328,207 +1314,45 @@ static unsigned int ulposc_cali_process(unsigned int idx)
 
 void ulposc_cali_init(void)
 {
-	struct device_node *node;
-	unsigned int i;
-
 	pr_info("%s\n", __func__);
 
-	/* get ULPOSC base address */
-#if defined(CONFIG_MACH_MT6833)
-	node = of_find_compatible_node(NULL, NULL,
-			"mediatek,mt6833-apmixedsys");
-#elif defined(CONFIG_MACH_MT6877)
-	node = of_find_compatible_node(NULL, NULL,
-			"mediatek,mt6877-apmixedsys");
-#else
-	node = of_find_compatible_node(NULL, NULL,
-			"mediatek,apmixed");
-#endif
-	if (!node) {
-		pr_err("error: can't find apmixedsys node\n");
-		WARN_ON(1);
-		return;
-	}
-
-	ulposc_base = of_iomap(node, 0);
-	if (!ulposc_base) {
-		pr_err("error: iomap fail for ulposc_base\n");
-		WARN_ON(1);
-		return;
-	}
-
-	for (i = 0; i < MAX_ULPOSC_CALI_NUM; i++) {
-		/* turn off ULPOSC2 */
-		turn_onoff_clk_high(ULPOSC_2, 0);
-
-		/* init ULPOSC RGs */
-		DRV_WriteReg32(ULPOSC2_CON0, ulposc_cfg[i].ulposc_rg0);
-		DRV_WriteReg32(ULPOSC2_CON1, ulposc_cfg[i].ulposc_rg1);
-		DRV_WriteReg32(ULPOSC2_CON2, ulposc_cfg[i].ulposc_rg2);
-
-		/* turn on ULPOSC2 */
-		turn_onoff_clk_high(ULPOSC_2, 1);
-
-		pr_debug("ULPOSC2: CON0=0x%x, CON1=0x%x, CON2=0x%x\n",
-			DRV_Reg32(ULPOSC2_CON0),
-			DRV_Reg32(ULPOSC2_CON1),
-			DRV_Reg32(ULPOSC2_CON2));
-
-		ulposc_cfg[i].cali_val = (unsigned short)ulposc_cali_process(i);
-		if (!ulposc_cfg[i].cali_val) {
-			pr_err("Error: calibrate ULPOSC2 to %dM fail\n",
-					ulposc_cfg[i].freq);
-			break;
-		}
-	}
-
-	/* turn off ULPOSC2 */
-	turn_onoff_clk_high(ULPOSC_2, 0);
-}
-
-/**
- * scp_force_clk_to_ulposc - Force SCP clock switch to ULPOSC before SCP boot.
- *
- * On this device the SCP firmware never writes CLK_SW_SEL, leaving the SCP
- * clock stuck on the default source (CLK_SW_SEL = 0x100).  Without ULPOSC the
- * SCP cannot execute its firmware, so it never sends the ready IPI — which
- * creates a deadlock because the clock fix used to live inside
- * sync_ulposc_cali_data_to_scp(), a function only called *after* the ready IPI.
- *
- * Additionally, ulposc_cali_init() may not have run yet (or it turns OFF
- * ULPOSC2 at the end of calibration), so the oscillator may not be running
- * and its RG registers may be at default values when we get here.
- *
- * This function is fully self-contained: it maps apmixedsys if needed,
- * initializes ULPOSC2 RG registers with default OPP0 values, enables the
- * oscillator, waits for stabilization, then switches CLK_SW_SEL.
- *
- * Must be called BEFORE releasing the SCP from reset (i.e. before writing
- * R_CORE0_SW_RSTN_CLR), so that the ULPOSC clock is already active when
- * SCP firmware starts.
- */
-void scp_force_clk_to_ulposc(void)
-{
-	unsigned int val;
-	struct device_node *node;
-
-	pr_notice("scp_force_clk_to_ulposc: start\n");
-
-	/* Step 1: Ensure apmixedsys is mapped (needed for ULPOSC2 RG registers).
-	 * ulposc_cali_init() may not have run yet, so ulposc_base may be NULL.
+	/*
+	 * Official kernel uses SMC calls to ATF for ULPOSC calibration.
+	 * Sub-commands 0x10000000-0x30000000 configure and calibrate
+	 * ULPOSC2 for OPP0-OPP2 respectively. ATF handles everything:
+	 *   - apmixedsys register access (no AP-side ioremap needed)
+	 *   - RG register configuration (ULPOSC2_CON0/CON1/CON2)
+	 *   - ULPOSC enable/disable (via internal turn_onoff_clk_high)
+	 *   - Frequency calibration (via internal ulposc_cali_process)
+	 *   - Calibration result storage
+	 *
+	 * This replaces the old direct-register-access approach which used
+	 * DRV_WriteReg32 on ULPOSC2_CON0/CON1/CON2 + ulposc_cali_process().
+	 * The new SCP firmware expects SMC-based calibration via ATF (EL3).
 	 */
-	if (!ulposc_base) {
-		node = of_find_compatible_node(NULL, NULL,
-				"mediatek,apmixed");
-		if (!node) {
-			pr_err("scp_force_clk_to_ulposc: cannot find apmixedsys node\n");
-			WARN_ON(1);
-			return;
-		}
-		ulposc_base = of_iomap(node, 0);
-		if (!ulposc_base) {
-			pr_err("scp_force_clk_to_ulposc: iomap fail for ulposc_base\n");
-			WARN_ON(1);
-			return;
-		}
-		pr_notice("scp_force_clk_to_ulposc: mapped apmixedsys at %p\n",
-			  ulposc_base);
-	}
-
-	/* Step 2: Turn OFF ULPOSC2 before configuring RG registers.
-	 * Must be off when writing CON0/CON1/CON2.
-	 */
-	DRV_ClrReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
-	udelay(50);
-	DRV_SetReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
-	DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
-	udelay(50);
-
-	/* Step 3: Initialize ULPOSC2 RG registers with OPP0 default values.
-	 * Use the first calibration entry (CLK_OPP0 = 250MHz for MT6873).
-	 */
-	pr_notice("scp_force_clk_to_ulposc: setting ULPOSC2 RG: CON0=0x%x CON1=0x%x CON2=0x%x\n",
-		  ulposc_cfg[0].ulposc_rg0,
-		  ulposc_cfg[0].ulposc_rg1,
-		  ulposc_cfg[0].ulposc_rg2);
-	DRV_WriteReg32(ULPOSC2_CON0, ulposc_cfg[0].ulposc_rg0);
-	DRV_WriteReg32(ULPOSC2_CON1, ulposc_cfg[0].ulposc_rg1);
-	DRV_WriteReg32(ULPOSC2_CON2, ulposc_cfg[0].ulposc_rg2);
-	udelay(50);
-
-	/* Step 4: Turn ON ULPOSC2 oscillator.
-	 * Same sequence as turn_onoff_clk_high(ULPOSC_2, 1):
-	 *   1. Enable CLK_HIGH_EN_BIT
-	 *   2. Clear HIGH_CORE_DIS_SUB_BIT
-	 *   3. Wait 150us for settle
-	 *   4. Enable HIGH_CORE_CG_BIT
-	 */
-	DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
-	DRV_ClrReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
-	udelay(150);
-	DRV_SetReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
-	udelay(50);
-
-	pr_notice("scp_force_clk_to_ulposc: ULPOSC2 enabled, waiting for stabilization\n");
-	/* Wait for ULPOSC to stabilize (oscillator needs time to lock) */
-	usleep_range(5000, 10000);
-
-	/* Step 5: Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
-	 * Hardware will then set CLK_SW_SEL_O_ULPOSC_CORE (bit 10) and/or
-	 * CLK_SW_SEL_O_ULPOSC_PERI (bit 11) once the switch completes.
-	 */
-	DRV_WriteReg32(CLK_SW_SEL, 0x1);
-
-	/* Wait for hardware to process the clock switch request */
-	usleep_range(3000, 5000);
-
-	/* Step 6: Verify the switch took effect */
-	val = DRV_Reg32(CLK_SW_SEL);
-	pr_notice("scp_force_clk_to_ulposc: CLK_SW_SEL=0x%x (bits[11:8]=0x%x)\n",
-		  val, (val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK);
-	if ((((val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
-	     (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
-		pr_err("SCP clock NOT switched to ULPOSC, CLK_SW_SEL=0x%x\n", val);
-		WARN_ON(1);
-	} else {
-		pr_notice("SCP clock switched to ULPOSC OK, CLK_SW_SEL=0x%x\n", val);
-	}
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x10000000, 0);
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x20000000, 0);
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x30000000, 0);
 }
 
 void sync_ulposc_cali_data_to_scp(void)
 {
-	int i, ret;
-	unsigned int ipi_data[2];
-	unsigned short *ptrTmp = (unsigned short *)&ipi_data[1];
-
-	if (!slp_ipi_init_done)
-		scp_slp_ipi_init();
-
-	ipi_data[0] = SLP_DBG_CMD_ULPOSC_CALI_VAL;
-
-	for (i = 0; i < MAX_ULPOSC_CALI_NUM; i++) {
-		*ptrTmp = ulposc_cfg[i].freq;
-		*(ptrTmp+1) = ulposc_cfg[i].cali_val;
-
-		pr_info("ipi to scp: freq=%d, cali_val=0x%x\n",
-			ulposc_cfg[i].freq, ulposc_cfg[i].cali_val);
-
-		ret = mtk_ipi_send_compl(&scp_ipidev,
-					IPI_OUT_C_SLEEP_0,
-					IPI_SEND_WAIT,
-					&ipi_data[0],
-					PIN_OUT_C_SIZE_SLEEP_0,
-					500);
-		if (ret != IPI_ACTION_DONE) {
-			pr_err("mtk_ipi_send_compl ULPOSC2_CALI_VAL(%d,%d) fail\n",
-					ulposc_cfg[i].freq,
-					ulposc_cfg[i].cali_val);
-			WARN_ON(1);
-		}
-		/* Allow SCP time to process calibration command */
-		usleep_range(2000, 3000);
-	}
-
+	/*
+	 * Official kernel uses SMC calls to ATF for syncing ULPOSC calibration
+	 * data to SCP. Sub-commands 0x60000000-0x90000000 handle the sync:
+	 *   0x60000000 — sync calibration data for OPP0
+	 *   0x70000000 — sync calibration data for OPP1
+	 *   0x80000000 — sync calibration data for OPP2
+	 *   0x90000000 — commit / finalize sync
+	 *
+	 * This replaces the old IPI-based approach (mtk_ipi_send_compl) which
+	 * sent {freq, cali_val} pairs to SCP via mailbox. The new SCP firmware
+	 * expects calibration data to be delivered via ATF SMC, not IPI.
+	 */
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x60000000, 0);
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x70000000, 0);
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x80000000, 0);
+	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x90000000, 0);
 }
 #endif /* ULPOSC_CALI_BY_AP */
 
