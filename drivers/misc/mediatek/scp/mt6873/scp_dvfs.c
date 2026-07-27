@@ -167,21 +167,6 @@ int slp_ipi_init_done;
 unsigned int sleep_block_cnt[NR_REASONS];
 
 #ifdef ULPOSC_CALI_BY_AP
-static void __iomem *ulposc_base;
-
-#define ULPOSC2_CON0 (ulposc_base + 0x2C0)
-#define RG_OSC_CALI_MSK		0x7F
-#define RG_OSC_CALI_SHFT	0
-
-#define ULPOSC2_CON1 (ulposc_base + 0x2C4)
-#define ULPOSC2_CON2 (ulposc_base + 0x2C8)
-
-#define CAL_MIN_VAL		0
-#define CAL_MAX_VAL		RG_OSC_CALI_MSK
-
-/* calibation miss rate, unit: 1% */
-#define CAL_MIS_RATE	5
-
 #define MAX_ULPOSC_CALI_NUM	3
 
 #if defined(CONFIG_MACH_MT6833)
@@ -1217,101 +1202,6 @@ static int mt_scp_dvfs_pm_restore_early(struct device *dev)
 }
 
 #ifdef ULPOSC_CALI_BY_AP
-static void turn_onoff_clk_high(int id, int is_on)
-{
-	pr_debug("%s(%d, %d)\n", __func__, id, is_on);
-
-	/*
-	 * Official kernel uses SMC call to ATF for ULPOSC clock control.
-	 * Direct AP-side register access is replaced with SMC calls:
-	 *   ON  = MTK_SIP_KERNEL_SCP_DVFS_CTRL, sub-cmd 0x40000000
-	 *   OFF = MTK_SIP_KERNEL_SCP_DVFS_CTRL, sub-cmd 0x50000000
-	 * ATF handles the actual register writes in EL3 secure world.
-	 * This matches the official kernel's communication protocol that
-	 * the SCP firmware expects.
-	 */
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4,
-		       is_on ? 0x40000000 : 0x50000000, 0);
-
-	/* Allow oscillator to stabilize after enable */
-	if (is_on)
-		udelay(200);
-	else
-		udelay(100);
-}
-
-static void set_ulposc_cali_value(unsigned int cali_val)
-{
-	unsigned int val;
-
-	val = DRV_Reg32(ULPOSC2_CON0) & ~(RG_OSC_CALI_MSK << RG_OSC_CALI_SHFT);
-	val = (val | ((cali_val & RG_OSC_CALI_MSK) << RG_OSC_CALI_SHFT));
-	DRV_WriteReg32(ULPOSC2_CON0, val);
-
-	udelay(50);
-}
-
-static unsigned int ulposc_cali_process(unsigned int idx)
-{
-	unsigned int target_val = 0, current_val = 0;
-	unsigned int min = CAL_MIN_VAL, max = CAL_MAX_VAL, middle;
-	unsigned int diff_by_min = 0, diff_by_max = 0xffff;
-	unsigned int cal_result = 0;
-
-	target_val = ulposc_cfg[idx].freq * 1000;
-
-	do {
-		middle = (min + max) / 2;
-		if (middle == min) {
-			pr_debug("middle(%d) == min(%d)\n", middle, min);
-			break;
-		}
-
-		set_ulposc_cali_value(middle);
-		current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
-
-		if (current_val > target_val)
-			max = middle;
-		else
-			min = middle;
-	} while (min <= max);
-
-	set_ulposc_cali_value(min);
-	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
-	if (current_val > target_val)
-		diff_by_min = current_val - target_val;
-	else
-		diff_by_min = target_val - current_val;
-
-	set_ulposc_cali_value(max);
-	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
-	if (current_val > target_val)
-		diff_by_max = current_val - target_val;
-	else
-		diff_by_max = target_val - current_val;
-
-	if (diff_by_min < diff_by_max)
-		cal_result = min;
-	else
-		cal_result = max;
-
-	set_ulposc_cali_value(cal_result);
-	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
-
-	/* check if calibrated value is in the range of target value +- 4% */
-	if ((current_val < (target_val * (100 - CAL_MIS_RATE) / 100)) ||
-		(current_val > (target_val * (100 + CAL_MIS_RATE) / 100))) {
-		pr_err("calibration fail, target=%dMHz, calibrated=%dMHz\n",
-				target_val/1000, current_val/1000);
-		return 0;
-	}
-
-	pr_info("calibration done, target=%dMHz, calibrated=%dMHz\n",
-				target_val/1000, current_val/1000);
-
-	return cal_result;
-}
-
 void ulposc_cali_init(void)
 {
 	pr_info("%s\n", __func__);
@@ -1319,16 +1209,8 @@ void ulposc_cali_init(void)
 	/*
 	 * Official kernel uses SMC calls to ATF for ULPOSC calibration.
 	 * Sub-commands 0x10000000-0x30000000 configure and calibrate
-	 * ULPOSC2 for OPP0-OPP2 respectively. ATF handles everything:
-	 *   - apmixedsys register access (no AP-side ioremap needed)
-	 *   - RG register configuration (ULPOSC2_CON0/CON1/CON2)
-	 *   - ULPOSC enable/disable (via internal turn_onoff_clk_high)
-	 *   - Frequency calibration (via internal ulposc_cali_process)
-	 *   - Calibration result storage
-	 *
-	 * This replaces the old direct-register-access approach which used
-	 * DRV_WriteReg32 on ULPOSC2_CON0/CON1/CON2 + ulposc_cali_process().
-	 * The new SCP firmware expects SMC-based calibration via ATF (EL3).
+	 * ULPOSC2 for OPP0-OPP2 respectively. ATF handles everything
+	 * in EL3 secure world (register access, RG config, calibration).
 	 */
 	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x10000000, 0);
 	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x20000000, 0);
