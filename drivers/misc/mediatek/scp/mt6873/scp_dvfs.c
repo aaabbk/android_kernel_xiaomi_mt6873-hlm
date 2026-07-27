@@ -1395,6 +1395,9 @@ void ulposc_cali_init(void)
  * creates a deadlock because the clock fix used to live inside
  * sync_ulposc_cali_data_to_scp(), a function only called *after* the ready IPI.
  *
+ * Additionally, ulposc_cali_init() turns OFF ULPOSC2 at the end of
+ * calibration, so the oscillator is not running when we get here.
+ *
  * This function must be called BEFORE releasing the SCP from reset (i.e.
  * before writing R_CORE0_SW_RSTN_CLR), so that the ULPOSC clock is already
  * active when SCP firmware starts.
@@ -1405,7 +1408,23 @@ void scp_force_clk_to_ulposc(void)
 
 	pr_info("forcing SCP clock switch to ULPOSC\n");
 
-	/* Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
+	/* Step 1: Turn ON ULPOSC2 oscillator.
+	 * ulposc_cali_init() turns ULPOSC2 OFF after calibration, so we must
+	 * re-enable it before requesting the clock switch.
+	 * This enables the high clock, clears the sub-disable bit, and
+	 * enables the clock gate — same as turn_onoff_clk_high(ULPOSC_2, 1).
+	 */
+	DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
+	DRV_ClrReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
+	udelay(150);
+	DRV_SetReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
+	udelay(50);
+
+	pr_info("ULPOSC2 enabled, waiting for stabilization\n");
+	/* Wait for ULPOSC to stabilize (longer than calibration's 150us) */
+	usleep_range(3000, 5000);
+
+	/* Step 2: Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
 	 * Hardware will then set CLK_SW_SEL_O_ULPOSC_CORE (bit 10) and/or
 	 * CLK_SW_SEL_O_ULPOSC_PERI (bit 11) once the switch completes.
 	 */
@@ -1414,7 +1433,7 @@ void scp_force_clk_to_ulposc(void)
 	/* Wait for hardware to process the clock switch request */
 	usleep_range(2000, 3000);
 
-	/* Verify the switch took effect */
+	/* Step 3: Verify the switch took effect */
 	val = DRV_Reg32(CLK_SW_SEL);
 	if ((((val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
 	     (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
