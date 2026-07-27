@@ -1395,24 +1395,73 @@ void ulposc_cali_init(void)
  * creates a deadlock because the clock fix used to live inside
  * sync_ulposc_cali_data_to_scp(), a function only called *after* the ready IPI.
  *
- * Additionally, ulposc_cali_init() turns OFF ULPOSC2 at the end of
- * calibration, so the oscillator is not running when we get here.
+ * Additionally, ulposc_cali_init() may not have run yet (or it turns OFF
+ * ULPOSC2 at the end of calibration), so the oscillator may not be running
+ * and its RG registers may be at default values when we get here.
  *
- * This function must be called BEFORE releasing the SCP from reset (i.e.
- * before writing R_CORE0_SW_RSTN_CLR), so that the ULPOSC clock is already
- * active when SCP firmware starts.
+ * This function is fully self-contained: it maps apmixedsys if needed,
+ * initializes ULPOSC2 RG registers with default OPP0 values, enables the
+ * oscillator, waits for stabilization, then switches CLK_SW_SEL.
+ *
+ * Must be called BEFORE releasing the SCP from reset (i.e. before writing
+ * R_CORE0_SW_RSTN_CLR), so that the ULPOSC clock is already active when
+ * SCP firmware starts.
  */
 void scp_force_clk_to_ulposc(void)
 {
 	unsigned int val;
+	struct device_node *node;
 
-	pr_info("forcing SCP clock switch to ULPOSC\n");
+	pr_notice("scp_force_clk_to_ulposc: start\n");
 
-	/* Step 1: Turn ON ULPOSC2 oscillator.
-	 * ulposc_cali_init() turns ULPOSC2 OFF after calibration, so we must
-	 * re-enable it before requesting the clock switch.
-	 * This enables the high clock, clears the sub-disable bit, and
-	 * enables the clock gate — same as turn_onoff_clk_high(ULPOSC_2, 1).
+	/* Step 1: Ensure apmixedsys is mapped (needed for ULPOSC2 RG registers).
+	 * ulposc_cali_init() may not have run yet, so ulposc_base may be NULL.
+	 */
+	if (!ulposc_base) {
+		node = of_find_compatible_node(NULL, NULL,
+				"mediatek,apmixed");
+		if (!node) {
+			pr_err("scp_force_clk_to_ulposc: cannot find apmixedsys node\n");
+			WARN_ON(1);
+			return;
+		}
+		ulposc_base = of_iomap(node, 0);
+		if (!ulposc_base) {
+			pr_err("scp_force_clk_to_ulposc: iomap fail for ulposc_base\n");
+			WARN_ON(1);
+			return;
+		}
+		pr_notice("scp_force_clk_to_ulposc: mapped apmixedsys at %p\n",
+			  ulposc_base);
+	}
+
+	/* Step 2: Turn OFF ULPOSC2 before configuring RG registers.
+	 * Must be off when writing CON0/CON1/CON2.
+	 */
+	DRV_ClrReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
+	udelay(50);
+	DRV_SetReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
+	DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
+	udelay(50);
+
+	/* Step 3: Initialize ULPOSC2 RG registers with OPP0 default values.
+	 * Use the first calibration entry (CLK_OPP0 = 250MHz for MT6873).
+	 */
+	pr_notice("scp_force_clk_to_ulposc: setting ULPOSC2 RG: CON0=0x%x CON1=0x%x CON2=0x%x\n",
+		  ulposc_cfg[0].ulposc_rg0,
+		  ulposc_cfg[0].ulposc_rg1,
+		  ulposc_cfg[0].ulposc_rg2);
+	DRV_WriteReg32(ULPOSC2_CON0, ulposc_cfg[0].ulposc_rg0);
+	DRV_WriteReg32(ULPOSC2_CON1, ulposc_cfg[0].ulposc_rg1);
+	DRV_WriteReg32(ULPOSC2_CON2, ulposc_cfg[0].ulposc_rg2);
+	udelay(50);
+
+	/* Step 4: Turn ON ULPOSC2 oscillator.
+	 * Same sequence as turn_onoff_clk_high(ULPOSC_2, 1):
+	 *   1. Enable CLK_HIGH_EN_BIT
+	 *   2. Clear HIGH_CORE_DIS_SUB_BIT
+	 *   3. Wait 150us for settle
+	 *   4. Enable HIGH_CORE_CG_BIT
 	 */
 	DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
 	DRV_ClrReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
@@ -1420,28 +1469,29 @@ void scp_force_clk_to_ulposc(void)
 	DRV_SetReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
 	udelay(50);
 
-	pr_info("ULPOSC2 enabled, waiting for stabilization\n");
-	/* Wait for ULPOSC to stabilize (longer than calibration's 150us) */
-	usleep_range(3000, 5000);
+	pr_notice("scp_force_clk_to_ulposc: ULPOSC2 enabled, waiting for stabilization\n");
+	/* Wait for ULPOSC to stabilize (oscillator needs time to lock) */
+	usleep_range(5000, 10000);
 
-	/* Step 2: Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
+	/* Step 5: Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
 	 * Hardware will then set CLK_SW_SEL_O_ULPOSC_CORE (bit 10) and/or
 	 * CLK_SW_SEL_O_ULPOSC_PERI (bit 11) once the switch completes.
 	 */
 	DRV_WriteReg32(CLK_SW_SEL, 0x1);
 
 	/* Wait for hardware to process the clock switch request */
-	usleep_range(2000, 3000);
+	usleep_range(3000, 5000);
 
-	/* Step 3: Verify the switch took effect */
+	/* Step 6: Verify the switch took effect */
 	val = DRV_Reg32(CLK_SW_SEL);
+	pr_notice("scp_force_clk_to_ulposc: CLK_SW_SEL=0x%x (bits[11:8]=0x%x)\n",
+		  val, (val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK);
 	if ((((val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
 	     (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
-		pr_err("SCP clock NOT switched to ULPOSC, CLK_SW_SEL=0x%x\n",
-		       val);
+		pr_err("SCP clock NOT switched to ULPOSC, CLK_SW_SEL=0x%x\n", val);
 		WARN_ON(1);
 	} else {
-		pr_info("SCP clock switched to ULPOSC, CLK_SW_SEL=0x%x\n", val);
+		pr_notice("SCP clock switched to ULPOSC OK, CLK_SW_SEL=0x%x\n", val);
 	}
 }
 
