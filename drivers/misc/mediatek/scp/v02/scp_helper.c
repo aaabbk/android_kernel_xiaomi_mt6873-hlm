@@ -686,6 +686,11 @@ int reset_scp(int reset)
 		 */
 		writel((unsigned int)scp_mem_base_phys, DRAM_RESV_ADDR_REG);
 		writel((unsigned int)scp_mem_size, DRAM_RESV_SIZE_REG);
+		/* Force SCP clock to ULPOSC before releasing reset.
+		 * Without this, SCP firmware cannot run and never sends
+		 * the ready IPI, causing all subsequent IPI timeouts.
+		 */
+		scp_force_clk_to_ulposc();
 		writel(1, R_CORE0_SW_RSTN_CLR);  /* release reset */
 		dsb(SY); /* may take lot of time */
 #if SCP_BOOT_TIME_OUT_MONITOR
@@ -1588,6 +1593,10 @@ void scp_sys_reset_ws(struct work_struct *ws)
 	/* Setup dram reserved address and size for scp*/
 	writel((unsigned int)scp_mem_base_phys, DRAM_RESV_ADDR_REG);
 	writel((unsigned int)scp_mem_size, DRAM_RESV_SIZE_REG);
+	/* Force SCP clock to ULPOSC before starting SCP.
+	 * Must happen before reset release so firmware runs at correct freq.
+	 */
+	scp_force_clk_to_ulposc();
 	/* start scp */
 	pr_notice("[SCP] start scp\n");
 	writel(1, R_CORE0_SW_RSTN_CLR);

@@ -1386,6 +1386,46 @@ void ulposc_cali_init(void)
 	turn_onoff_clk_high(ULPOSC_2, 0);
 }
 
+/**
+ * scp_force_clk_to_ulposc - Force SCP clock switch to ULPOSC before SCP boot.
+ *
+ * On this device the SCP firmware never writes CLK_SW_SEL, leaving the SCP
+ * clock stuck on the default source (CLK_SW_SEL = 0x100).  Without ULPOSC the
+ * SCP cannot execute its firmware, so it never sends the ready IPI — which
+ * creates a deadlock because the clock fix used to live inside
+ * sync_ulposc_cali_data_to_scp(), a function only called *after* the ready IPI.
+ *
+ * This function must be called BEFORE releasing the SCP from reset (i.e.
+ * before writing R_CORE0_SW_RSTN_CLR), so that the ULPOSC clock is already
+ * active when SCP firmware starts.
+ */
+void scp_force_clk_to_ulposc(void)
+{
+	unsigned int val;
+
+	pr_info("forcing SCP clock switch to ULPOSC\n");
+
+	/* Request ULPOSC clock source by writing 0x1 to CLK_SW_SEL.
+	 * Hardware will then set CLK_SW_SEL_O_ULPOSC_CORE (bit 10) and/or
+	 * CLK_SW_SEL_O_ULPOSC_PERI (bit 11) once the switch completes.
+	 */
+	DRV_WriteReg32(CLK_SW_SEL, 0x1);
+
+	/* Wait for hardware to process the clock switch request */
+	usleep_range(2000, 3000);
+
+	/* Verify the switch took effect */
+	val = DRV_Reg32(CLK_SW_SEL);
+	if ((((val >> CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
+	     (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
+		pr_err("SCP clock NOT switched to ULPOSC, CLK_SW_SEL=0x%x\n",
+		       val);
+		WARN_ON(1);
+	} else {
+		pr_info("SCP clock switched to ULPOSC, CLK_SW_SEL=0x%x\n", val);
+	}
+}
+
 void sync_ulposc_cali_data_to_scp(void)
 {
 	int i, ret;
@@ -1420,21 +1460,6 @@ void sync_ulposc_cali_data_to_scp(void)
 		usleep_range(2000, 3000);
 	}
 
-	/* Force ULPOSC clock switch: SCP firmware fails to switch CLK_SW_SEL
-	 * from 0x100 (default) to ULPOSC. Write 0x1 to request ULPOSC source.
-	 * Hardware sets CLK_SW_SEL_O_ULPOSC_CORE/PERI (bits[11:10]) when done.
-	 */
-	DRV_WriteReg32(CLK_SW_SEL, 0x1);
-	/* Wait for hardware to process the clock switch request */
-	usleep_range(2000, 3000);
-
-	/* check if SCP clock is switched to ULPOSC */
-	if ((((DRV_Reg32(CLK_SW_SEL)>>CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
-		 (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
-		pr_err("Error: SCP clock is not switched to ULPOSC, CLK_SW_SEL=0x%x\n",
-			DRV_Reg32(CLK_SW_SEL));
-		WARN_ON(1);
-	}
 }
 #endif /* ULPOSC_CALI_BY_AP */
 
