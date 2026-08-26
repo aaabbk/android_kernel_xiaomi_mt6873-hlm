@@ -208,7 +208,7 @@ jobs:
       - name: Configure Kernel
         run: |
           export PATH="/usr/lib/ccache:$PATH"
-          make -j1 LLVM=1 CC=clang O=out ARCH=arm64 \
+          make -j"$BUILD_JOBS" LLVM=1 CC=clang O=out ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             LOCALVERSION="-${LOCALVERSION_NAME}" \
@@ -221,7 +221,7 @@ jobs:
           export PATH="/usr/lib/ccache:$PATH"
           timeout --foreground --signal=TERM --kill-after=2m 50m \
             nice -n 5 /usr/bin/time -v \
-            make -j1 LLVM=1 CC="ccache clang" O=out ARCH=arm64 \
+            make -j"$BUILD_JOBS" LLVM=1 CC="ccache clang" O=out ARCH=arm64 \
               CROSS_COMPILE=aarch64-linux-android- \
               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
               LOCALVERSION="-${LOCALVERSION_NAME}" \
