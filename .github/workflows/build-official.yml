@@ -67,10 +67,8 @@ jobs:
       LOCALVERSION_NAME: ${{ inputs.localversion || 'ci' }}
       PACK_AK3: ${{ inputs.pack_anykernel }}
       TARGET: ${{ inputs.target }}
-      # 官方 clang 11.0.1 (build 6443078, based on r383902)
-      CLANG_REV: clang-r383902
-      # 官方编译器 GitHub 镜像（googlesource 主源失败时回退）
-      CLANG_MIRROR_BRANCH: ten
+      # ksu_action 工具链：AOSP clang-r383902b-11.0.2 + google gcc aarch64-linux-android-4.9 / arm-linux-androideabi-4.9
+      CLANG_REV: clang-r383902b
       # AnyKernel3 固定版本
       ANYKERNEL_REV: 1c9a500dd4aa8081952523126e97eb155aed941b
 
@@ -144,7 +142,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/clang-extract
-          key: clang-${{ env.CLANG_REV }}-${{ env.CLANG_MIRROR_BRANCH }}
+          key: clang-${{ env.CLANG_REV }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -170,46 +168,37 @@ jobs:
             exit 1
           fi
 
-      - name: Get official clang 11.0.1 (clang-r383902)
+      - name: Download clang-r383902b toolchain (clang + google gcc 4.9)
         # 缓存命中则跳过下载（actions/cache 已在 Restore 步骤恢复 /tmp/clang-extract）
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mkdir -p /tmp/clang-extract
-          # GitHub 镜像优先（走 GitHub CDN，比 googlesource 快很多），失败回退官方源
-          MIRROR="https://codeload.github.com/Ancient-Lab/prebuilts_clang_host_linux-x86_${CLANG_REV}/tar.gz/refs/heads/${CLANG_MIRROR_BRANCH}"
-          PRIMARY="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REV}/${CLANG_REV}.tar.gz"
-          if curl -fL --retry 3 --connect-timeout 20 -o /tmp/clang.tar.gz "$MIRROR"; then
-            echo "::notice::clang-r383902 已从 GitHub 镜像下载"
-          else
-            echo "::warning::GitHub 镜像下载失败，回退 android.googlesource.com"
-            curl -fL --retry 3 --connect-timeout 20 -o /tmp/clang.tar.gz "$PRIMARY"
-          fi
-          tar -xzf /tmp/clang.tar.gz -C /tmp/clang-extract
+          # ksu_action 工具链集：AOSP clang-r383902b-11.0.2 + google gcc aarch64-linux-android-4.9 / arm-linux-androideabi-4.9
+          git clone https://github.com/tomxi1997/Toolchain.git /tmp/clang-extract/clang-aosp --depth=1
 
       - name: Resolve clang toolchain path
         run: |
           set -euo pipefail
-          if [ -x "/tmp/clang-extract/${CLANG_REV}/bin/clang" ]; then
-            CLANG_DIR="/tmp/clang-extract/${CLANG_REV}"
-          elif [ -x "/tmp/clang-extract/prebuilts_clang_host_linux-x86_${CLANG_REV}-${CLANG_MIRROR_BRANCH}/bin/clang" ]; then
-            CLANG_DIR="/tmp/clang-extract/prebuilts_clang_host_linux-x86_${CLANG_REV}-${CLANG_MIRROR_BRANCH}"
-          else
-            echo "::error::解压后未找到 bin/clang"
-            exit 1
-          fi
+          CLANG_DIR="/tmp/clang-extract/clang-aosp/google_clang/clang-r383902b-11.0.2"
+          GCC64_DIR="/tmp/clang-extract/clang-aosp/google_gcc/aarch64-linux-android-4.9"
+          GCC32_DIR="/tmp/clang-extract/clang-aosp/google_gcc/arm-linux-androideabi-4.9"
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$GCC64_DIR/bin/aarch64-linux-android-gcc"
+          test -x "$GCC32_DIR/bin/arm-linux-androideabi-gcc"
           echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
-          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
-          # 校验确实是官方 clang 11.0.1
+          echo "GCC64_DIR=$GCC64_DIR" >> "$GITHUB_ENV"
+          echo "GCC32_DIR=$GCC32_DIR" >> "$GITHUB_ENV"
+          echo "$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin" >> "$GITHUB_PATH"
+          # 校验 clang 版本
           "$CLANG_DIR/bin/clang" --version
-          test "$("$CLANG_DIR/bin/clang" --version | head -n1 | grep -o 'clang version [0-9.]*')" = "clang version 11.0.1"
           "$CLANG_DIR/bin/ld.lld" --version
 
       - name: Prepare build variables
         run: |
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE=aarch64-linux-android-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_COMPAT=arm-linux-androideabi-" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_HOST=Github-Action" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_USER=${GITHUB_ACTOR,,}" >> "$GITHUB_ENV"
           # 并行任务数 = 全部 CPU 核数（最大并行；larger runner 上 nproc 自动变大）
@@ -219,15 +208,9 @@ jobs:
       - name: Configure Kernel
         run: |
           export PATH="/usr/lib/ccache:$PATH"
-          make -j"$BUILD_JOBS" O=out ARCH=arm64 CC="ccache clang" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE="$CROSS_COMPILE" \
-            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
-            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            AR="ccache llvm-ar" NM="ccache llvm-nm" OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
-            READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
-            LD=ld.lld \
-            HOSTCC="ccache clang" HOSTCXX="ccache clang++" LLVM_IAS=1 \
+          make -j1 LLVM=1 CC=clang O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             LOCALVERSION="-${LOCALVERSION_NAME}" \
             "$DEFCONFIG"
 
@@ -238,15 +221,9 @@ jobs:
           export PATH="/usr/lib/ccache:$PATH"
           timeout --foreground --signal=TERM --kill-after=2m 50m \
             nice -n 5 /usr/bin/time -v \
-            make -j"$BUILD_JOBS" O=out ARCH=arm64 CC="ccache clang" \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE="$CROSS_COMPILE" \
-              CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
-              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-              AR="ccache llvm-ar" NM="ccache llvm-nm" OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
-              READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
-              LD=ld.lld \
-              HOSTCC="ccache clang" HOSTCXX="ccache clang++" LLVM_IAS=1 \
+            make -j1 LLVM=1 CC="ccache clang" O=out ARCH=arm64 \
+              CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
               LOCALVERSION="-${LOCALVERSION_NAME}" \
               "$TARGET"
           echo "::notice::Kernel make exited successfully"
