@@ -93,7 +93,7 @@ struct tee_shm_pool {
  * @dev:	embedded basic device structure
  * @cdev:	embedded cdev
  * @num_users:	number of active users of this device
- * @c_no_users:	completion used when unregistering the device
+ * @c_no_user:	completion used when unregistering the device
  * @mutex:	mutex protecting @num_users and @idr
  * @idr:	register of shared memory object allocated on this device
  * @pool:	shared memory pool
@@ -118,11 +118,6 @@ struct tee_device {
 int tee_shm_init(void);
 
 int isee_shm_get_fd(struct tee_shm *shm);
-
-/* === BEGIN ADDED: declarations for TEE_IOC_SHM_ALLOC handler === */
-struct tee_shm *isee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
-void isee_shm_free(struct tee_shm *shm);
-/* === END ADDED: declarations for TEE_IOC_SHM_ALLOC handler === */
 
 bool isee_device_get(struct tee_device *teedev);
 void isee_device_put(struct tee_device *teedev);

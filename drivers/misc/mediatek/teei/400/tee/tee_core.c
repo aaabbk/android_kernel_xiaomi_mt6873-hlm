@@ -417,8 +417,10 @@ static int tee_ioctl_invoke(struct tee_context *ctx,
 	}
 
 	rc = ctx->teedev->desc->ops->invoke_func(ctx, &arg, params);
-	if (rc)
+	if (rc) {
 		goto out;
+	}
+
 
 	if (put_user(arg.ret, &uarg->ret) ||
 	    put_user(arg.ret_origin, &uarg->ret_origin)) {
@@ -458,6 +460,7 @@ tee_ioctl_close_session(struct tee_context *ctx,
 			struct tee_ioctl_close_session_arg __user *uarg)
 {
 	struct tee_ioctl_close_session_arg arg;
+	int ret;
 
 	if (!ctx->teedev->desc->ops->close_session)
 		return -EINVAL;
@@ -465,7 +468,8 @@ tee_ioctl_close_session(struct tee_context *ctx,
 	if (copy_from_user(&arg, uarg, sizeof(arg)))
 		return -EFAULT;
 
-	return ctx->teedev->desc->ops->close_session(ctx, arg.session);
+	ret = ctx->teedev->desc->ops->close_session(ctx, arg.session);
+	return ret;
 }
 
 static int params_to_supp(struct tee_context *ctx,
@@ -665,6 +669,53 @@ static int tee_ioctl_set_hostname(struct tee_context *ctx,
 	return 0;
 }
 
+/* Ported from the MT6889 A12 (4.14.186) reference: the keymaster@4.1
+ * HAL allocates TEE shared memory via TEE_IOC_SHM_ALLOC; without this
+ * ioctl the HAL exits right after opening its session and keystore2
+ * never comes up (stuck at boot logo).
+ */
+static int tee_ioctl_shm_alloc(struct tee_context *ctx,
+			       struct tee_ioctl_shm_alloc_data __user *udata)
+{
+	long ret;
+	struct tee_ioctl_shm_alloc_data data;
+	struct tee_shm *shm;
+
+	if (copy_from_user(&data, udata, sizeof(data)))
+		return -EFAULT;
+
+
+	/* Currently no input flags are supported */
+	if (data.flags) {
+		return -EINVAL;
+	}
+
+	data.id = -1;
+
+	shm = isee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	if (IS_ERR(shm)) {
+		return PTR_ERR(shm);
+	}
+
+
+	data.id = shm->id;
+	data.flags = shm->flags;
+	data.size = shm->size;
+
+	if (copy_to_user(udata, &data, sizeof(data)))
+		ret = -EFAULT;
+	else
+		ret = isee_shm_get_fd(shm);
+
+	/*
+	 * When user space closes the file descriptor the shared memory
+	 * should be freed or if isee_shm_get_fd() failed then it will
+	 * be freed immediately.
+	 */
+	isee_shm_put(shm);
+	return ret;
+}
+
 static int tee_ioctl_shm_id(struct tee_context *ctx, unsigned long uaddr)
 {
 	struct tee_device *teedev = ctx->teedev;
@@ -708,66 +759,6 @@ static int tee_ioctl_shm_release(struct tee_context *ctx, unsigned long arg)
 	return 0;
 }
 
-/* === BEGIN ADDED: TEE_IOC_SHM_ALLOC handler === */
-/**
- * tee_ioctl_shm_alloc() - Allocate shared memory and export as dma_buf fd
- * @ctx:	TEE context
- * @uarg:	User space pointer to struct tee_ioctl_shm_alloc_data
- *
- * Allocates shared memory from the TEE shared memory pool and exports it
- * as a dma_buf file descriptor.  The user space process can mmap() the
- * returned fd to obtain access to the shared memory buffer.
- *
- * Returns a file descriptor on success or < 0 on failure.
- */
-static int tee_ioctl_shm_alloc(struct tee_context *ctx,
-			       struct tee_ioctl_shm_alloc_data __user *udata)
-{
-	struct tee_ioctl_shm_alloc_data data;
-	struct tee_shm *shm;
-	int fd;
-
-	pr_err("TEE_IOC_SHM_ALLOC: entered, ctx=%p teedev=%p teedev->name=%s teedev->pool=%p\n",
-		ctx, ctx->teedev, ctx->teedev->name, ctx->teedev->pool);
-
-	if (copy_from_user(&data, udata, sizeof(data)))
-		return -EFAULT;
-
-	pr_err("TEE_IOC_SHM_ALLOC: size=%llu flags=%u\n",
-		(unsigned long long)data.size, data.flags);
-
-	if (data.flags)
-		return -EINVAL;
-
-	shm = isee_shm_alloc(ctx, data.size,
-			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
-	if (IS_ERR(shm)) {
-		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_alloc failed: %ld, teedev->pool=%p\n",
-		       PTR_ERR(shm), ctx->teedev->pool);
-		return PTR_ERR(shm);
-	}
-
-	pr_err("TEE_IOC_SHM_ALLOC: shm=%p kaddr=%p paddr=%pa size=%zu\n",
-		shm, shm->kaddr, &shm->paddr, shm->size);
-
-	fd = isee_shm_get_fd(shm);
-	if (fd < 0) {
-		pr_err("TEE_IOC_SHM_ALLOC: isee_shm_get_fd failed: %d\n", fd);
-		isee_shm_free(shm);
-		return fd;
-	}
-
-	data.id = shm->id;
-
-	if (copy_to_user(udata, &data, sizeof(data))) {
-		isee_shm_free(shm);
-		return -EFAULT;
-	}
-
-	pr_err("TEE_IOC_SHM_ALLOC: success, fd=%d id=%d\n", fd, data.id);
-	return fd;
-}
-/* === END ADDED: TEE_IOC_SHM_ALLOC handler === */
 
 long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -784,7 +775,7 @@ long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case TEE_IOC_VERSION:
 		retVal = tee_ioctl_version(ctx, uarg);
 		break;
-	case TEE_IOC_SHM_ALLOC:				/* ADDED */
+	case TEE_IOC_SHM_ALLOC:
 		retVal = tee_ioctl_shm_alloc(ctx, uarg);
 		break;
 	case TEE_IOC_SHM_RELEASE:
@@ -823,7 +814,6 @@ long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		retVal = tee_ioctl_set_hostname(ctx, uarg);
 		break;
 	default:
-		pr_err("tee_ioctl: unknown cmd=0x%x\n", cmd);
 		retVal = -EINVAL;
 	}
 
@@ -1221,6 +1211,7 @@ EXPORT_SYMBOL_GPL(tee_client_invoke_func);
 static int __init tee_init(void)
 {
 	int rc;
+
 
 	tee_class = class_create(THIS_MODULE, "isee_tee");
 	if (IS_ERR(tee_class)) {

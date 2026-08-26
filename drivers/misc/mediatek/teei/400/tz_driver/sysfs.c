@@ -277,6 +277,7 @@ static int load_ut_drv(struct TEEC_UUID *uuid, unsigned int flags)
 					{ 0x96, 0xc7, 0xc7, 0xa2,
 						0x1a, 0xcb, 0x49, 0x32 } };
 
+
 	if (!is_teei_ready()) {
 		IMSG_WARN("TEE is not ready\n");
 		return -EBUSY;
@@ -366,11 +367,13 @@ int tz_load_ta_by_str(const char *buf)
 	print_uuid(&uuid);
 
 	res = load_ut_drv(&uuid, TEEI_TA);
-	if (res)
+	if (res) {
 		IMSG_DEBUG("load secure ta failed(uuid: %s)\n",
 				buf);
+		return 0;
+	}
 
-	return res;
+	return 0;
 }
 int tz_load_drv_by_str(const char *buf)
 {
@@ -388,11 +391,13 @@ int tz_load_drv_by_str(const char *buf)
 	print_uuid(&uuid);
 
 	res = load_ut_drv(&uuid, TEEI_DRV);
-	if (res)
+	if (res) {
 		IMSG_DEBUG("load secure driver failed(uuid: %s)\n",
 				buf);
+		return 0;
+	}
 
-	return res;
+	return 0;
 }
 
 static ssize_t load_ut_drv_store(struct device *dev,

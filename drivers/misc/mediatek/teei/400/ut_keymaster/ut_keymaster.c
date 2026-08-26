@@ -146,6 +146,7 @@ int keymaster_init(void)
 	int result = 0;
 	struct device *class_dev = NULL;
 
+
 	devno = MKDEV(keymaster_major, 0);
 	result = alloc_chrdev_region(&devno, 0, 1, DEV_NAME);
 	keymaster_major = MAJOR(devno);

@@ -877,6 +877,7 @@ static int teei_config_init(void)
 	int retVal = 0;
 	struct device *class_dev = NULL;
 
+
 	retVal = alloc_chrdev_region(&teei_config_device_no,
 						0, 1, TEEI_CONFIG_DEV);
 
@@ -1014,6 +1015,7 @@ static int teei_probe(struct platform_device *pdev)
 {
 	int ut_irq = 0;
 
+
 	ut_irq = platform_get_irq(pdev, 0);
 	IMSG_INFO("teei device ut_irq is %d\n", ut_irq);
 
@@ -1064,8 +1066,8 @@ static int teei_client_init(void)
 {
 	int ret_code = 0;
 	struct device *class_dev = NULL;
-
 	struct sched_param param = {.sched_priority = 50 };
+
 
 	/* IMSG_DEBUG("TEEI Agent Driver Module Init ...\n"); */
 
@@ -1216,7 +1218,7 @@ static int teei_client_init(void)
 	IMSG_DEBUG("create the sub_thread successfully!\n");
 */
 
-	teei_config_init();
+	ret_code = teei_config_init();
 
 	goto return_fn;
 
