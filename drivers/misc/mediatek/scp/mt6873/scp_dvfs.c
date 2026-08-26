@@ -68,46 +68,25 @@
 #define pr_fmt(fmt)	"[scp_dvfs]: " fmt
 
 /*
- * New SCP firmware compatibility:
- * Official kernel (decompiled) shows:
- * - scp_ipi_send() has NO wait parameter — always fire-and-forget
- * - All IPI routed through MPOOL with {id, len, data} header
- * - No mtk_ipi_send_compl (pin-based completion) exists at all
- * - Bidirectional comms via message queues, not pin ACK
+ * a12 SCP firmware compatibility fix:
+ * 
+ * a12固件行为（反汇编确认）：
+ * - 直接读取 EXPECTED_FREQ_REG (0x7003004C) 获取目标频率
+ * - 直接读取 CURRENT_FREQ_REG (0x70030050) 获取当前频率
+ * - 不从IPI消息payload解析频率值
+ * - IPI仅作为触发信号，通知固件检查寄存器
+ * - 不返回IPI ACK
  *
- * Fix: redirect all mtk_ipi_send_compl to scp_ipi_send (MPOOL wrapper)
- * with IPI_CHRE as the id. The wrapper adds {id, len, data} header.
- * Also redirect DVFS direct mtk_ipi_send from mbox1 to mbox3.
+ * a11内核问题：
+ * - scp_request_freq() 发送IPI但未写 EXPECTED_FREQ_REG
+ * - 使用 IPI_SEND_WAIT 等待ACK，但固件不返回ACK
+ * - 导致 IPI timeout 和 DVFS 失败
+ *
+ * 修复方案：
+ * 1. 发送IPI前，先写 EXPECTED_FREQ_REG
+ * 2. 改用非阻塞IPI发送（opt=0）
+ * 3. 通过轮询 CURRENT_FREQ_REG 确认DVFS完成
  */
-
-/* MPOOL IPI id enum — must match v02/scp_ipi_wrapper.h */
-enum ipi_id {
-	IPI_MPOOL = 0,
-	IPI_CHRE,
-	IPI_CHREX,
-	IPI_SENSOR,
-	SCP_NR_IPI,
-};
-
-#ifndef MBOX_SLOT_SIZE
-#define MBOX_SLOT_SIZE 4
-#endif
-
-/* Redirect DVFS pin to mbox3 (fire-and-forget, no ACK needed) */
-#define IPI_OUT_DVFS_SET_FREQ_0      IPI_OUT_DVFS_SET_FREQ_1
-#undef PIN_OUT_SIZE_DVFS_SET_FREQ_0
-#define PIN_OUT_SIZE_DVFS_SET_FREQ_0 PIN_OUT_SIZE_DVFS_SET_FREQ_1
-
-/* Redirect completion-based send to MPOOL fire-and-forget.
- * scp_ipi_send wraps data in {id=IPI_CHRE, len, data} and sends via
- * MPOOL_0 (mbox2). This matches official kernel protocol.
- * Return SCP_IPI_DONE(0) = IPI_ACTION_DONE(0) so existing checks pass.
- */
-extern int scp_ipi_send(int id, void *buf, unsigned int len,
-			unsigned int wait, enum scp_core_id scp_id);
-
-#define mtk_ipi_send_compl(dev, pin, opt, data, slots, timeout) \
-	scp_ipi_send(IPI_CHRE, data, (slots) * MBOX_SLOT_SIZE, 0, SCP_A_ID)
 
 #define DRV_Reg32(addr)	readl(addr)
 #define DRV_WriteReg32(addr, val) writel(val, addr)
@@ -474,6 +453,14 @@ int scp_request_freq(void)
 		return 0;
 	}
 
+	/*
+	 * a12固件兼容性修复：
+	 * 计算期望频率并写EXPECTED_FREQ_REG，让固件能读到
+	 * 固件直接读寄存器，不从IPI消息解析频率
+	 */
+	scp_expected_freq = scp_get_freq();
+	writel(scp_expected_freq, EXPECTED_FREQ_REG);
+
 	/* because we are waiting for scp to update register:scp_current_freq
 	 * use wake lock to prevent AP from entering suspend state
 	 */
@@ -499,9 +486,14 @@ int scp_request_freq(void)
 		value = scp_expected_freq;
 
 		do {
+			/*
+			 * a12固件不解析IPI payload，也不返回ACK
+			 * IPI仅作为触发信号，通知固件检查EXPECTED_FREQ_REG
+			 * 使用opt=0（非阻塞），不等待ACK
+			 */
 			ret = mtk_ipi_send(&scp_ipidev,
 					IPI_OUT_DVFS_SET_FREQ_0,
-					IPI_SEND_WAIT, &value,
+					0, &value,  /* opt=0, 不等待ACK */
 					PIN_OUT_SIZE_DVFS_SET_FREQ_0, 0);
 			if (ret != IPI_ACTION_DONE)
 				pr_debug("SCP send IPI fail - %d\n", ret);
