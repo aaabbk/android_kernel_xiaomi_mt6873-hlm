@@ -1,0 +1,299 @@
+# 使用官方预编译工具链构建 Xiaomi cezanne (Redmi Note 10) 内核
+#
+#   编译器：Android clang 11.0.1 (build 6443078, based on r383902)  +  LLD 11.0.1
+#   与官核版本串一致：
+#     Linux version 4.14.186-... (Android (6443078 based on r383902) clang version 11.0.1, LLD 11.0.1)
+#
+# 运行方式：GitHub Actions -> Run workflow -> 填写 Defconfig 配置文件名后运行。
+# 配置文件会先在 arch/arm64/configs 与 arch/arm64/configs/vendor 下校验存在性。
+
+name: Build Kernel (Official Clang 11.0.1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        # 必填：运行前必须输入配置文件名称
+        description: 'Defconfig 配置文件名，例如 cezanne_user_defconfig（也支持 vendor/cezanne_user_defconfig）'
+        required: true
+        default: vendor/bomb_user_defconfig
+        type: string
+      localversion:
+        description: '内核本地版本后缀（LOCALVERSION，追加在 CONFIG_LOCALVERSION "-Ultra" 之后），留空则用 ci'
+        required: false
+        default: ci
+        type: string
+      pack_anykernel:
+        description: '是否用 AnyKernel3 打包成可刷写的 zip'
+        required: false
+        default: true
+        type: boolean
+      target:
+        description: '构建产物目标（make 目标）；产物只含所选目标一个文件'
+        required: false
+        default: Image.gz
+        type: choice
+        options:
+          - Image.gz
+          - Image.gz-dtb
+          - Image
+      runner:
+        # 免费 ubuntu-22.04 只有 2 vCPU，全量编译很慢；
+        # 4core/8core/16core 是 GitHub larger runner，需要付费计划额度
+        description: '构建机（免费 2 vCPU；larger runner 需付费额度）'
+        required: false
+        default: ubuntu-22.04
+        type: choice
+        options:
+          - ubuntu-22.04
+          - ubuntu-22.04-4core
+          - ubuntu-22.04-8core
+          - ubuntu-22.04-16core
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-build-official-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    env:
+      DEFCONFIG: ${{ inputs.defconfig }}
+      LOCALVERSION_NAME: ${{ inputs.localversion || 'ci' }}
+      PACK_AK3: ${{ inputs.pack_anykernel }}
+      TARGET: ${{ inputs.target }}
+      # 官方 clang 11.0.1 (build 6443078, based on r383902)
+      CLANG_REV: clang-r383902
+      # 官方编译器 GitHub 镜像（googlesource 主源失败时回退）
+      CLANG_MIRROR_BRANCH: ten
+      # AnyKernel3 固定版本
+      ANYKERNEL_REV: 1c9a500dd4aa8081952523126e97eb155aed941b
+
+    steps:
+
+      - name: Free disk space
+        # ubuntu-22.04 runner 预装了大量软件（73G 盘已用约 66G），
+        # 加上 10G swap + clang + ccache + 内核中间文件后会在链接 vmlinux 时磁盘耗尽。
+        # 删除编译用不到的大目录，给内核构建留出空间。
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/local/share/powershell /usr/local/lib/node_modules /usr/lib/jvm
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo apt-get purge -y azure-cli google-cloud-cli google-chrome-stable microsoft-edge-stable firefox powershell dotnet-sdk-* hhvm || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Configure 10 GiB swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Initialize Compilation Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc bison flex cpio \
+            curl git zip time \
+            libssl-dev libelf-dev \
+            ccache \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
+
+      - name: Install legacy libtinfo (for old clang prebuilts)
+        # 老版本 Android clang 预编译可能依赖 libtinfo.so.5，Ubuntu 24.04 仓库已移除，这里做兜底
+        run: |
+          if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
+            sudo apt-get install -y libtinfo5 2>/dev/null || \
+            (curl -fsSL -o /tmp/libtinfo5.deb \
+              https://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb \
+              && sudo dpkg -i /tmp/libtinfo5.deb) || true
+          fi
+          ldconfig -p | grep libtinfo || true
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-
+            ccache-
+
+      - name: Setup ccache
+        run: |
+          # 1G ccache + ~3.5G clang 工具链缓存，控制在仓库 10G cache 上限内
+          ccache -M 1G
+          ccache -z
+          ccache -s
+
+      - name: Restore clang toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/clang-extract
+          key: clang-${{ env.CLANG_REV }}-${{ env.CLANG_MIRROR_BRANCH }}
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          submodules: recursive
+
+      - name: Record source revision
+        id: revision
+        run: |
+          echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ARTIFACT_TAG=${DEFCONFIG//\//-}" >> "$GITHUB_ENV"
+
+      - name: Validate defconfig
+        run: |
+          set -euo pipefail
+          if [ -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            echo "::notice::使用 defconfig: arch/arm64/configs/$DEFCONFIG"
+          elif [ -f "arch/arm64/configs/vendor/$DEFCONFIG" ]; then
+            echo "::notice::使用 defconfig: arch/arm64/configs/vendor/$DEFCONFIG"
+          else
+            echo "::error::defconfig '$DEFCONFIG' 不存在（已查找 arch/arm64/configs 与 arch/arm64/configs/vendor）"
+            exit 1
+          fi
+
+      - name: Get official clang 11.0.1 (clang-r383902)
+        # 缓存命中则跳过下载（actions/cache 已在 Restore 步骤恢复 /tmp/clang-extract）
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/clang-extract
+          # GitHub 镜像优先（走 GitHub CDN，比 googlesource 快很多），失败回退官方源
+          MIRROR="https://codeload.github.com/Ancient-Lab/prebuilts_clang_host_linux-x86_${CLANG_REV}/tar.gz/refs/heads/${CLANG_MIRROR_BRANCH}"
+          PRIMARY="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_REV}/${CLANG_REV}.tar.gz"
+          if curl -fL --retry 3 --connect-timeout 20 -o /tmp/clang.tar.gz "$MIRROR"; then
+            echo "::notice::clang-r383902 已从 GitHub 镜像下载"
+          else
+            echo "::warning::GitHub 镜像下载失败，回退 android.googlesource.com"
+            curl -fL --retry 3 --connect-timeout 20 -o /tmp/clang.tar.gz "$PRIMARY"
+          fi
+          tar -xzf /tmp/clang.tar.gz -C /tmp/clang-extract
+
+      - name: Resolve clang toolchain path
+        run: |
+          set -euo pipefail
+          if [ -x "/tmp/clang-extract/${CLANG_REV}/bin/clang" ]; then
+            CLANG_DIR="/tmp/clang-extract/${CLANG_REV}"
+          elif [ -x "/tmp/clang-extract/prebuilts_clang_host_linux-x86_${CLANG_REV}-${CLANG_MIRROR_BRANCH}/bin/clang" ]; then
+            CLANG_DIR="/tmp/clang-extract/prebuilts_clang_host_linux-x86_${CLANG_REV}-${CLANG_MIRROR_BRANCH}"
+          else
+            echo "::error::解压后未找到 bin/clang"
+            exit 1
+          fi
+          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          # 校验确实是官方 clang 11.0.1
+          "$CLANG_DIR/bin/clang" --version
+          test "$("$CLANG_DIR/bin/clang" --version | head -n1 | grep -o 'clang version [0-9.]*')" = "clang version 11.0.1"
+          "$CLANG_DIR/bin/ld.lld" --version
+
+      - name: Prepare build variables
+        run: |
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=Github-Action" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_USER=${GITHUB_ACTOR,,}" >> "$GITHUB_ENV"
+          # 并行任务数 = 全部 CPU 核数（最大并行；larger runner 上 nproc 自动变大）
+          echo "BUILD_JOBS=$(nproc)" >> "$GITHUB_ENV"
+          echo "::notice::使用全部 $(nproc) 个 CPU 并行编译（-j$(nproc) 为最大并行）"
+
+      - name: Configure Kernel
+        run: |
+          export PATH="/usr/lib/ccache:$PATH"
+          make -j"$BUILD_JOBS" O=out ARCH=arm64 CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            AR="ccache llvm-ar" NM="ccache llvm-nm" OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
+            LD=ld.lld \
+            HOSTCC="ccache clang" HOSTCXX="ccache clang++" LLVM_IAS=1 \
+            LOCALVERSION="-${LOCALVERSION_NAME}" \
+            "$DEFCONFIG"
+
+      - name: Build Kernel Image
+        run: |
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+          export PATH="/usr/lib/ccache:$PATH"
+          timeout --foreground --signal=TERM --kill-after=2m 50m \
+            nice -n 5 /usr/bin/time -v \
+            make -j"$BUILD_JOBS" O=out ARCH=arm64 CC="ccache clang" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
+              CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+              AR="ccache llvm-ar" NM="ccache llvm-nm" OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+              READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
+              LD=ld.lld \
+              HOSTCC="ccache clang" HOSTCXX="ccache clang++" LLVM_IAS=1 \
+              LOCALVERSION="-${LOCALVERSION_NAME}" \
+              "$TARGET"
+          echo "::notice::Kernel make exited successfully"
+
+      - name: Verify and stage kernel image
+        run: |
+          set -euo pipefail
+          image="out/arch/arm64/boot/$TARGET"
+          test -s "$image"
+          ls -lh "$image"
+          sha256sum "$image"
+          # 只保留目标产物，不再附带未压缩的 Image（内容与 Image.gz 重复）
+          mkdir -p package
+          cp "$image" package/
+
+      - name: Pack Kernel with AnyKernel3
+        if: env.PACK_AK3 == 'true'
+        run: |
+          set -euo pipefail
+          git init AK3
+          git -C AK3 remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git -C AK3 fetch --depth=1 origin "$ANYKERNEL_REV"
+          git -C AK3 checkout --detach FETCH_HEAD
+          test "$(git -C AK3 rev-parse HEAD)" = "$ANYKERNEL_REV"
+          test -s "out/arch/arm64/boot/$TARGET"
+          cp "out/arch/arm64/boot/$TARGET" AK3/
+          cd AK3
+          sed -i "s|kernel.string=.*|kernel.string=Xiaomi Custom Kernel (cezanne)|" anykernel.sh
+          sed -i "s|device.name1=.*|device.name1=cezanne|" anykernel.sh
+          sed -i "s|device.name2=.*|device.name2=cezanne|" anykernel.sh
+          sed -i "s|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0|" anykernel.sh
+          sed -i "s|BLOCK=.*|BLOCK=auto;|" anykernel.sh
+          grep -q "^device.name1=cezanne$" anykernel.sh
+          grep -q "^IS_SLOT_DEVICE=0$" anykernel.sh
+          grep -q "^BLOCK=auto;$" anykernel.sh
+          rm -rf .git README.md LICENSE
+          cd "$GITHUB_WORKSPACE"
+          cp -r AK3/. package/
+
+      - name: Upload Kernel Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel_${{ env.ARTIFACT_TAG }}_${{ env.TARGET }}_${{ steps.revision.outputs.sha }}_${{ env.LOCALVERSION_NAME }}
+          path: package/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
