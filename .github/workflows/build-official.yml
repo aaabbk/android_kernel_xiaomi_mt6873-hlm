@@ -108,6 +108,7 @@ jobs:
             curl git zip time \
             libssl-dev libelf-dev \
             ccache \
+            dwarves \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
