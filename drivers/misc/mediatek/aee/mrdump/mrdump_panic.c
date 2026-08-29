@@ -180,9 +180,20 @@ int mrdump_common_die(int fiq_step, int reboot_reason, const char *msg,
 #ifdef CONFIG_MTK_RAM_CONSOLE
 		aee_rr_rec_exp_type(AEE_EXP_TYPE_KE);
 #endif
+#ifdef CONFIG_MTK_APEX_INIT_CRASH_DIAG
+		/*
+		 * Always print the full register state and backtrace on a
+		 * kernel panic (e.g. "Attempted to kill init!") so the exact
+		 * crash point is easy to locate from the ramoops/pstore log,
+		 * regardless of CONFIG_DEBUG_BUGVERBOSE.
+		 */
+		__show_regs(regs);
+		dump_stack();
+#else
 #ifndef CONFIG_DEBUG_BUGVERBOSE
 		dump_stack();
 #endif
+#endif /* CONFIG_MTK_APEX_INIT_CRASH_DIAG */
 		break;
 	case AEE_REBOOT_MODE_HANG_DETECT:
 #ifdef CONFIG_MTK_RAM_CONSOLE

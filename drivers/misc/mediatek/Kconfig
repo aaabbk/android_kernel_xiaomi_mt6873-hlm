@@ -430,6 +430,22 @@ config MTK_APEX_DEBUG
 	  Enable debug tracing for apexd boot issues. Prints block device
 	  status and process stack traces periodically and on panic.
 
+config MTK_APEX_INIT_CRASH_DIAG
+	bool "Init crash diagnostics (locate exact init crash point)"
+	depends on MTK_APEX_DEBUG
+	default y
+	help
+	  When init (pid 1) crashes or exits during early boot - e.g. the
+	  "Attempted to kill init!" kernel panic with exitcode 0x100 caused
+	  by an init LOG(FATAL)/CHECK during first-stage mount or
+	  AVB/vbmeta verification - dump the userspace PC/LR/SP and a
+	  frame-pointer backtrace so the exact crash point (binary/library
+	  + offset) can be located from the ramoops log. Also makes the
+	  kernel panic handler print full registers and an unconditional
+	  stack trace.
+	  Say Y if you want to locate the exact init crash point.
+	  Say N to restore the default (less verbose) behavior.
+
 config XIAOMI_MOTOR_DRV8846
 	bool "xiaomi MOTOR DRV8846 ENABLE"
 	default n

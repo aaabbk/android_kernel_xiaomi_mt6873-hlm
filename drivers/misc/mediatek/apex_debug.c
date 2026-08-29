@@ -168,8 +168,12 @@ void apex_open_hook(const char *filename, int fd)
 }
 EXPORT_SYMBOL(apex_open_hook);
 
-/* Forward declaration - defined later, used by exit hook */
+/* Forward declarations - defined later, used by exit hook */
 static void apex_dump_task_full(struct task_struct *task);
+#ifdef CONFIG_MTK_APEX_INIT_CRASH_DIAG
+static void apex_dump_init_crash(struct task_struct *task, long code);
+#endif
+static const char *apex_sig_name(int sig);
 
 /* ============================================================
  * Hook 2: exit tracking
@@ -180,6 +184,19 @@ void apex_do_exit_hook(long code)
 
 	if (t->flags & PF_KTHREAD)
 		return;
+
+	/* init (pid 1) NEVER exits normally. Any exit - including
+	 * exit_group(0x100) = 256, Android's fatal-error exit status -
+	 * means init crashed during early boot, which immediately
+	 * panics the kernel ("Attempted to kill init!"). Treat every
+	 * init exit as a crash and dump the full userspace context
+	 * so the exact crash point can be located in the log. */
+#ifdef CONFIG_MTK_APEX_INIT_CRASH_DIAG
+	if (t->pid == 1) {
+		apex_dump_init_crash(t, code);
+		return;
+	}
+#endif
 
 	/* Precise keymaster HAL exit tracking by pid */
 	if (apex_is_km_pid(t->pid)) {
@@ -294,6 +311,154 @@ static const char *apex_sig_name(int sig)
 	default: return "OTHER";
 	}
 }
+
+#ifdef CONFIG_MTK_APEX_INIT_CRASH_DIAG
+/* ============================================================
+ * init (pid 1) crash diagnostics
+ *
+ * init is the first userspace process and is expected to run
+ * forever. ANY exit of pid 1 - including exit_group(0x100)=256,
+ * Android's fatal-error exit status - means init crashed during
+ * early boot, which immediately triggers the kernel panic
+ * "Attempted to kill init!". Without these diagnostics the log
+ * only shows the exit code and gives no clue about the crash
+ * point. We dump the userspace PC/LR/SP (which point into init
+ * or one of the libraries init was executing at exit time) and
+ * walk the userspace stack frames via the x29 (FP) chain, mapping
+ * every address to file+offset so the exact crash location can
+ * be identified.
+ * ============================================================ */
+
+/* Map a single userspace address to "file+offset" via the VMA list. */
+static void apex_init_addr_location(struct task_struct *t,
+				    unsigned long addr, const char *tag)
+{
+	struct vm_area_struct *vma;
+	const char *fname = "[anon]";
+	unsigned long off = 0;
+
+	if (!t->mm || !addr)
+		return;
+
+	down_read(&t->mm->mmap_sem);
+	vma = find_vma(t->mm, addr);
+	if (vma && addr >= vma->vm_start && vma->vm_file &&
+	    vma->vm_file->f_path.dentry) {
+		fname = vma->vm_file->f_path.dentry->d_name.name;
+		off = addr - vma->vm_start + (vma->vm_pgoff << PAGE_SHIFT);
+		pr_emerg("APEX_INIT:   %s = 0x%lx in %s+0x%lx "
+			 "(vma 0x%lx-0x%lx)\n",
+			 tag, addr, fname, off, vma->vm_start, vma->vm_end);
+	} else if (vma) {
+		pr_emerg("APEX_INIT:   %s = 0x%lx in [anon] vma "
+			 "0x%lx-0x%lx\n", tag, addr, vma->vm_start,
+			 vma->vm_end);
+	} else {
+		pr_emerg("APEX_INIT:   %s = 0x%lx not in any VMA\n",
+			 tag, addr);
+	}
+	up_read(&t->mm->mmap_sem);
+}
+
+/* Walk the userspace frame-pointer (x29) chain and print each frame. */
+static void apex_init_user_backtrace(struct task_struct *t,
+				     unsigned long fp)
+{
+	int i;
+
+	pr_emerg("APEX_INIT: userspace backtrace (frame-pointer walk):\n");
+	for (i = 0; i < 24 && fp; i++) {
+		unsigned long next_fp = 0, pc = 0;
+		struct vm_area_struct *vma;
+		const char *fname = "[anon]";
+		unsigned long off = 0;
+
+		/* Read [fp]   = next frame pointer (x29) and
+		 *     [fp+8] = return address (x30/LR) */
+		if (access_process_vm(t, fp, &next_fp,
+				      sizeof(next_fp), 0) != sizeof(next_fp))
+			break;
+		if (access_process_vm(t, fp + 8, &pc,
+				      sizeof(pc), 0) != sizeof(pc))
+			break;
+		if (!pc)
+			break;
+
+		if (t->mm) {
+			down_read(&t->mm->mmap_sem);
+			vma = find_vma(t->mm, pc);
+			if (vma && vma->vm_file &&
+			    vma->vm_file->f_path.dentry) {
+				fname = vma->vm_file->f_path.dentry->d_name.name;
+				off = pc - vma->vm_start +
+				      (vma->vm_pgoff << PAGE_SHIFT);
+				pr_emerg("APEX_INIT:   [%02d] %s+0x%lx "
+					 "(pc=0x%lx fp=0x%lx)\n",
+					 i, fname, off, pc, fp);
+			} else {
+				pr_emerg("APEX_INIT:   [%02d] pc=0x%lx "
+					 "fp=0x%lx (%s)\n", i, pc, fp, fname);
+			}
+			up_read(&t->mm->mmap_sem);
+		}
+		fp = next_fp;
+	}
+}
+
+/* Dump the full crash context of init (pid 1). */
+static void apex_dump_init_crash(struct task_struct *t, long code)
+{
+	struct pt_regs *regs;
+	unsigned long pc = 0, lr = 0, fp = 0, sp = 0;
+
+	pr_emerg("APEX_INIT: ===== init (pid 1) CRASHED =====\n");
+	pr_emerg("APEX_INIT: comm=%s pid=%d ppid=%d exit code=0x%lx (%ld)\n",
+		 t->comm, t->pid,
+		 t->parent ? t->parent->pid : -1, code, code);
+
+	if (code > 0 && code < 0x80) {
+		pr_emerg("APEX_INIT: killed by signal %ld (%s)\n",
+			 code, apex_sig_name((int)code));
+	} else {
+		/* exit_group(0x100)=256 is Android's "init fatal error"
+		 * exit status. init never calls exit() on purpose, so a
+		 * non-signal exit means a fatal startup failure (e.g.
+		 * LOG(FATAL)/CHECK in first-stage mount, vbmeta/AVB
+		 * verification failure). The userspace fatal message was
+		 * written to /dev/kmsg just before this exit - look for
+		 * "init:" lines right above the panic in the ramoops log. */
+		pr_emerg("APEX_INIT: fatal exit status 0x%lx - NOT a normal "
+			 "exit. Look for the init LOG(FATAL) message in "
+			 "kmsg/ramoops just above the panic.\n", code);
+	}
+
+	regs = task_pt_regs(t);
+	if (!regs) {
+		pr_emerg("APEX_INIT: task_pt_regs() = NULL, cannot dump "
+			 "userspace PC\n");
+		return;
+	}
+
+	pc = regs->pc;
+	lr = regs->regs[30];
+	fp = regs->regs[29];
+	sp = regs->sp;
+
+	pr_emerg("APEX_INIT: user PC=0x%lx LR=0x%lx FP=0x%lx SP=0x%lx\n",
+		 pc, lr, fp, sp);
+
+	apex_init_addr_location(t, pc, "PC");
+	apex_init_addr_location(t, lr, "LR");
+
+	apex_init_user_backtrace(t, fp);
+
+	if (t->parent)
+		pr_emerg("APEX_INIT: parent pid=%d comm=%s\n",
+			 t->parent->pid, t->parent->comm);
+
+	pr_emerg("APEX_INIT: ===== end init crash dump =====\n");
+}
+#endif /* CONFIG_MTK_APEX_INIT_CRASH_DIAG */
 
 /* kprobe pre_handler for do_send_sig_info */
 static int apex_kp_do_send_sig_pre(struct kprobe *p, struct pt_regs *regs)

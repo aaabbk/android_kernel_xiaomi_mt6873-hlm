@@ -998,9 +998,42 @@ void __noreturn do_exit(long code)
 		 * If the last thread of global init has exited, panic
 		 * immediately to get a useable coredump.
 		 */
-		if (unlikely(is_global_init(tsk)))
+		if (unlikely(is_global_init(tsk))) {
+#ifdef CONFIG_MTK_APEX_INIT_CRASH_DIAG
+			struct pt_regs *init_regs;
+
+			/*
+			 * Global init (PID 1) is exiting - this is always a
+			 * fatal userspace crash that boot-loops the device.
+			 * Dump as much context as possible so the exact
+			 * crash point can be found: the userspace PC/LR/SP
+			 * tell us where in the init binary (or one of its
+			 * libraries) the fatal exit happened, and the
+			 * userspace LOG(FATAL) message explaining WHY init
+			 * exited was mirrored into the kernel log via
+			 * /dev/kmsg and is preserved by ramoops/pstore just
+			 * above this panic.
+			 */
+			pr_emerg("Global init (pid 1, comm \"%s\") is "
+				 "exiting - fatal init crash, panicking...\n",
+				 tsk->comm);
+
+			init_regs = task_pt_regs(tsk);
+			if (init_regs) {
+				pr_emerg("init userspace PC=0x%llx LR=0x%llx "
+					 "FP=0x%llx SP=0x%llx\n",
+					 (unsigned long long)init_regs->pc,
+					 (unsigned long long)init_regs->regs[30],
+					 (unsigned long long)init_regs->regs[29],
+					 (unsigned long long)init_regs->sp);
+			}
+
+			dump_stack();
+#endif /* CONFIG_MTK_APEX_INIT_CRASH_DIAG */
+
 			panic("Attempted to kill init! exitcode=0x%08x\n",
-				tsk->signal->group_exit_code ?: (int)code);
+			      tsk->signal->group_exit_code ?: (int)code);
+		}
 
 #ifdef CONFIG_POSIX_TIMERS
 		hrtimer_cancel(&tsk->signal->real_timer);
