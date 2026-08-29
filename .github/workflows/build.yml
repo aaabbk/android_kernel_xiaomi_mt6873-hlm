@@ -1,0 +1,172 @@
+name: Build Kernel
+
+on:
+  push:
+    branches:
+      - susfs-miui
+      - miui13
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      packaging:
+        description: '打包方式: ak3 (AnyKernel3 刷机包) 或 files (散文件)'
+        required: false
+        default: 'ak3'
+        type: choice
+        options:
+          - ak3
+          - files
+      gz:
+        description: '同时输出 Image.gz 内核镜像 (yes/no)'
+        required: false
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      dtb:
+        description: '同时输出 Image.gz-dtb 内核镜像 (yes/no)'
+        required: false
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev ccache zip unzip wget git
+
+      - name: Create 10G swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=10240 status=progress
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-
+            ccache-
+
+      - name: Download AOSP Clang (r416183b)
+        run: |
+          # googlesource.com no longer hosts r416183b on master; use crDroid's mirror
+          git clone --depth=1 -b 11.0 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r416183b toolchains/clang
+          toolchains/clang/bin/clang --version | head -3
+
+      - name: Download GCC 4.9 (aarch64 and arm)
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 toolchains/gcc/aarch64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 toolchains/gcc/arm
+          toolchains/gcc/aarch64/bin/aarch64-linux-android-gcc --version | head -2
+
+      - name: Generate defconfig
+        run: |
+          export PATH=$PWD/toolchains/clang/bin:$PATH
+          export O=out
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=$PWD/toolchains/gcc/aarch64/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$PWD/toolchains/gcc/arm/bin/arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CCACHE_DIR=/tmp/ccache
+          make O=out CC="ccache clang" NM=llvm-nm OBJDUMP=llvm-objdump STRIP=llvm-strip vendor/bomb_user_defconfig
+
+      - name: Build kernel
+        run: |
+          export PATH=$PWD/toolchains/clang/bin:$PATH
+          export O=out
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=$PWD/toolchains/gcc/aarch64/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$PWD/toolchains/gcc/arm/bin/arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CCACHE_DIR=/tmp/ccache
+          make -j$(nproc --all) O=out CC="ccache clang" NM=llvm-nm OBJDUMP=llvm-objdump STRIP=llvm-strip
+
+      - name: Package kernel
+        run: |
+          set -e
+          PACK="${{ github.event.inputs.packaging || 'ak3' }}"
+          GZ="${{ github.event.inputs.gz || 'yes' }}"
+          DTB="${{ github.event.inputs.dtb || 'yes' }}"
+          echo "Packaging mode: $PACK"
+          echo "Image.gz output: $GZ"
+          echo "Image.gz-dtb output: $DTB"
+          mkdir -p release/modules release/gz
+          # 内核模块单独放 modules/
+          find out -name "*.ko" -exec cp {} release/modules/ \; 2>/dev/null || true
+          # 按选项输出 gz 镜像 (Image.gz / Image.gz-dtb 分开控制)
+          if [ "$GZ" = "yes" ]; then
+            [ -f out/arch/arm64/boot/Image.gz ] && cp out/arch/arm64/boot/Image.gz release/gz/ || true
+          fi
+          if [ "$DTB" = "yes" ]; then
+            [ -f out/arch/arm64/boot/Image.gz-dtb ] && cp out/arch/arm64/boot/Image.gz-dtb release/gz/ || true
+          fi
+          echo "=== release/ ==="
+          ls -la release/
+          echo "=== release/gz/ ==="
+          ls -la release/gz/ || true
+          echo "=== release/modules/ ==="
+          ls -la release/modules/
+          if [ "$PACK" = "ak3" ]; then
+            echo "Building AnyKernel3 flashable zip..."
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+            # MTK boot 镜像: Image.gz-dtb (Image.gz + dtb), 设备为 A-only
+            if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+              cp out/arch/arm64/boot/Image.gz-dtb ak3/Image.gz-dtb
+            elif [ -f out/arch/arm64/boot/Image.gz ]; then
+              cp out/arch/arm64/boot/Image.gz ak3/Image.gz
+            else
+              cp out/arch/arm64/boot/Image ak3/Image
+            fi
+            printf '%s\n' \
+              '#!/sbin/sh' \
+              '# AnyKernel3 - bomb (Redmi 10X Pro, MediaTek MT6873, A-only)' \
+              'block=/dev/block/bootdevice/by-name/boot;' \
+              'is_slot_device=0;' \
+              'ramdisk_compression=auto;' \
+              '. ./tools/ak3-core.sh;' \
+              'split_boot;' \
+              'flash_boot;' \
+              > ak3/anykernel.sh
+            chmod +x ak3/anykernel.sh
+            rm -rf ak3/.git*
+            ( cd ak3 && zip -r9 ../AnyKernel3-bomb.zip . )
+            ls -lh AnyKernel3-bomb.zip
+            echo "=== ak3 + gz 产物 ==="
+            ls -lh release/gz/ AnyKernel3-bomb.zip
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bomb
+          path: |
+            release/modules/
+            release/gz/
+            AnyKernel3-*.zip
+          if-no-files-found: error
