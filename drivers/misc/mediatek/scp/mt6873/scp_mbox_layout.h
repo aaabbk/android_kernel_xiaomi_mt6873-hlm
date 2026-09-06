@@ -29,7 +29,7 @@
 #define PIN_OUT_SIZE_DVFS_SET_FREQ_0	1 /* the following will use mbox 1 */
 #define PIN_OUT_C_SIZE_SLEEP_0          2 /* the following will use mbox 1 */
 #define PIN_OUT_R_SIZE_SLEEP_0          1 /* the following will use mbox 1 */
-#define PIN_OUT_SIZE_TEST_0		 1 /* the following will use mbox 3 */
+#define PIN_OUT_SIZE_TEST_0		 1 /* the following will use mbox 1 */
 #define PIN_OUT_SIZE_AUDIO_ULTRA_SND_0	 9 /* the following will use mbox 1 */
 
 /* definition of slot size for received PINs */
@@ -38,7 +38,9 @@
 #define PIN_IN_SIZE_SCP_READY_0		 1 /* the following will use mbox 1 */
 #define PIN_IN_SIZE_SCP_RAM_DUMP_0	 2 /* the following will use mbox 1 */
 #define PIN_IN_SIZE_AUDIO_ULTRA_SND_0	 5 /* the following will use mbox 1 */
-#define PIN_IN_SIZE_AUDIO_ULTRA_SND_ACK_0 2 /* the following will use mbox 1 */
+#define PIN_IN_SIZE_AUDIO_ULTRA_SND_ACK_0 2/* the following will use mbox 1 */
+
+
 /* ============================================================ */
 
 /* core1 */
@@ -58,21 +60,12 @@
 /* ============================================================ */
 
 /* this is mbox pool for 2 cores */
-#ifdef CONFIG_MTK_SENSORHUB
-#define PIN_OUT_SIZE_SCP_MPOOL         4 /* the following will use mbox 2,4 */
-#define PIN_IN_SIZE_SCP_MPOOL          4 /* the following will use mbox 2,4 */
-#else
 #define PIN_OUT_SIZE_SCP_MPOOL         34 /* the following will use mbox 2,4 */
 #define PIN_IN_SIZE_SCP_MPOOL          30 /* the following will use mbox 2,4 */
-#endif
 #define PIN_OUT_SIZE_CHRE_0            34
 #define PIN_OUT_SIZE_CHREX_0           14
 #define PIN_OUT_SIZE_SENSOR_0          14
 #define PIN_IN_SIZE_CHRE_0             14
 #define PIN_IN_SIZE_SENSOR_0           14
 
-#define PIN_OUT_SIZE_SENSOR_CTRL	16 /* core0 mbox 2 */
-#define PIN_IN_SIZE_SENSOR_CTRL		2  /* core0 mbox 2 */
-#define PIN_OUT_SIZE_SENSOR_NOTIFY	7  /* core0 mbox 2 */
-#define PIN_IN_SIZE_SENSOR_NOTIFY	7  /* core0 mbox 2 */
 #endif

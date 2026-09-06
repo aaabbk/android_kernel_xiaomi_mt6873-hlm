@@ -52,7 +52,8 @@ static struct scp_reserve_mblock scp_reserve_mblock[] = {
 		.size = 0x180000,  /* 1.5 MB */
 	},
 #if defined(CONFIG_SND_SOC_MTK_SCP_SMARTPA) || \
-	defined(CONFIG_MTK_VOW_SUPPORT)
+	defined(CONFIG_MTK_VOW_SUPPORT) || \
+	defined(CONFIG_MTK_ULTRASND_PROXIMITY)
 	{
 		.num = AUDIO_IPI_MEM_ID,
 		.start_phys = 0x0,
@@ -74,14 +75,12 @@ static struct scp_reserve_mblock scp_reserve_mblock[] = {
 		.size = 0x18000, /* 96KB */
 	},
 #endif
-#ifdef CONFIG_MTK_VOW_BARGE_IN_SUPPORT
 	{
 		.num = VOW_BARGEIN_MEM_ID,
 		.start_phys = 0x0,
 		.start_virt = 0x0,
-		.size = 0x4600,  /* 17KB */
+		.size = 0x5A00,  /* 22.5KB */
 	},
-#endif
 #ifdef SCP_PARAMS_TO_SCP_SUPPORT
 	{
 		.num = SCP_DRV_PARAMS_MEM_ID,
@@ -90,6 +89,15 @@ static struct scp_reserve_mblock scp_reserve_mblock[] = {
 		.size = 0x100,  /* 256 bytes */
 	},
 #endif
+#ifdef CONFIG_MTK_ULTRASND_PROXIMITY
+	{
+		.num = ULTRA_MEM_ID,
+		.start_phys = 0x0,
+		.start_virt = 0x0,
+		.size = 0x19000,
+},
+#endif
+
 };
 
 

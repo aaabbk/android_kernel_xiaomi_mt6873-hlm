@@ -29,38 +29,6 @@ static struct scp_reserve_mblock scp_reserve_mblock[] = {
 		.start_virt = 0x0,
 		.size = 0x100000,  /* 1 MB */
 	},
-#ifdef CONFIG_MTK_SENSORHUB
-	{
-		.num = SENS_SUPER_MEM_ID,
-		.start_phys = 0x0,
-		.start_virt = 0x0,
-		.size = 0x10000,  /* 64 KB */
-	},
-	{
-		.num = SENS_LIST_MEM_ID,
-		.start_phys = 0x0,
-		.start_virt = 0x0,
-		.size = 0x1000,  /* 4 KB */
-	},
-	{
-		.num = SENS_DEBUG_MEM_ID,
-		.start_phys = 0x0,
-		.start_virt = 0x0,
-		.size = 0x2000,  /* 8 KB */
-	},
-	{
-		.num = SENS_CUSTOM_W_MEM_ID,
-		.start_phys = 0x0,
-		.start_virt = 0x0,
-		.size = 0x100,  /* 256 bytes */
-	},
-	{
-		.num = SENS_CUSTOM_R_MEM_ID,
-		.start_phys = 0x0,
-		.start_virt = 0x0,
-		.size = 0x100,  /* 256 bytes */
-	},
-#endif
 	{
 		.num = SCP_A_LOGGER_MEM_ID,
 		.start_phys = 0x0,
@@ -82,7 +50,7 @@ static struct scp_reserve_mblock scp_reserve_mblock[] = {
 		.num = VOW_BARGEIN_MEM_ID,
 		.start_phys = 0x0,
 		.start_virt = 0x0,
-		.size = 0x5A00,  /* 22.5KB */
+		.size = 0x4600,  /* 17.5KB (A12 官方内核反汇编确认值) */
 	},
 #ifdef SCP_PARAMS_TO_SCP_SUPPORT
 	{

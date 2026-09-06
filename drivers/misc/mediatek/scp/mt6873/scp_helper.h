@@ -82,8 +82,8 @@ enum SEMAPHORE_3WAY_FLAG {
 /* scp semaphore status */
 enum  SEMAPHORE_STATUS {
 	SEMAPHORE_NOT_INIT = -1,
-	SEMAPHORE_SUCCESS = 0,
-	SEMAPHORE_FAIL = 1,
+	SEMAPHORE_FAIL = 0,
+	SEMAPHORE_SUCCESS = 1,
 };
 
 #define SCP_SEMA_AUDIOREG SEMA_SCP_3WAY_AUDIOREG
@@ -131,13 +131,6 @@ enum scp_reserve_mem_id_t {
 	VOW_MEM_ID,
 #endif
 	SENS_MEM_ID,
-#ifdef CONFIG_MTK_SENSORHUB
-	SENS_SUPER_MEM_ID,
-	SENS_LIST_MEM_ID,
-	SENS_DEBUG_MEM_ID,
-	SENS_CUSTOM_W_MEM_ID,
-	SENS_CUSTOM_R_MEM_ID,
-#endif
 	SCP_A_LOGGER_MEM_ID,
 #if defined(CONFIG_SND_SOC_MTK_SCP_SMARTPA) || \
 	defined(CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT) || \
@@ -184,6 +177,13 @@ struct scp_region_info_st {
 	uint32_t regdump_start;
 	uint32_t regdump_size;
 	uint32_t ap_params_start;
+	//#ifdef OPLUS_FEATURE_SENSOR
+    uint32_t nOperator;
+    uint32_t nPCBVersion;
+    uint32_t nProject;
+    uint32_t sensor_data_addr;
+    //#endif
+
 };
 
 /* scp device attribute */
@@ -231,7 +231,9 @@ extern void memcpy_from_scp(void *trg, const void __iomem *src,
 		int size);
 extern int reset_scp(int reset);
 
+#if SCP_RECOVERY_SUPPORT
 void scp_wdt_reset(int cpu_id);
+#endif
 
 extern phys_addr_t scp_get_reserve_mem_phys(enum scp_reserve_mem_id_t id);
 extern phys_addr_t scp_get_reserve_mem_virt(enum scp_reserve_mem_id_t id);

@@ -1,6 +1,5 @@
 /*
  * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -69,6 +68,26 @@ enum SEMAPHORE_FLAG {
 	NR_FLAG = 9,
 };
 
+/* scp semaphore 3way definition */
+enum SEMAPHORE_3WAY_FLAG {
+	SEMA_SCP_3WAY_UART = 0,
+	SEMA_SCP_3WAY_C2C_A = 1,
+	SEMA_SCP_3WAY_C2C_B = 2,
+	SEMA_SCP_3WAY_DVFS = 3,
+	SEMA_SCP_3WAY_AUDIO = 4,
+	SEMA_SCP_3WAY_AUDIOREG = 5,
+	SEMA_SCP_3WAY_NUM = 6,
+};
+
+/* scp semaphore status */
+enum  SEMAPHORE_STATUS {
+	SEMAPHORE_NOT_INIT = -1,
+	SEMAPHORE_SUCCESS = 0,
+	SEMAPHORE_FAIL = 1,
+};
+
+#define SCP_SEMA_AUDIOREG SEMA_SCP_3WAY_AUDIOREG
+
 /* scp reset status */
 enum SCP_RESET_STATUS {
 	RESET_STATUS_STOP = 0,
@@ -119,12 +138,14 @@ enum scp_reserve_mem_id_t {
 	defined(CONFIG_MTK_VOW_SUPPORT)
 	AUDIO_IPI_MEM_ID,
 #endif
-#ifdef CONFIG_MTK_VOW_BARGE_IN_SUPPORT
 	VOW_BARGEIN_MEM_ID,
-#endif
 #ifdef SCP_PARAMS_TO_SCP_SUPPORT
 	SCP_DRV_PARAMS_MEM_ID,
 #endif
+#ifdef CONFIG_MTK_ULTRASND_PROXIMITY
+	ULTRA_MEM_ID,
+#endif
+	SENS_FB_MEM_ID,
 	NUMS_MEM_ID,
 };
 
@@ -156,6 +177,12 @@ struct scp_region_info_st {
 	uint32_t scpctl;
 	uint32_t regdump_start;
 	uint32_t regdump_size;
+//#ifdef VENDOR_EDIT
+	uint32_t nOperator;
+	uint32_t nPCBVersion;
+	uint32_t nProject;
+	uint32_t sensor_data_addr;
+//#endif
 };
 
 /* scp device attribute */
@@ -167,6 +194,7 @@ extern struct scp_regs scpreg;
 extern struct device_attribute dev_attr_scp_mobile_log;
 extern struct device_attribute dev_attr_scp_A_get_last_log;
 extern struct device_attribute dev_attr_scp_A_status;
+extern struct device_attribute dev_attr_log_filter;
 extern struct bin_attribute bin_attr_scp_dump;
 
 /* scp loggger */
@@ -230,7 +258,7 @@ extern int scp_sys_full_reset(void);
 extern void scp_reset_awake_counts(void);
 extern void scp_awake_init(void);
 #if SCP_RECOVERY_SUPPORT
-void scp_wdt_reset(int cpu_id);
+
 extern unsigned int scp_reset_by_cmd;
 extern struct scp_region_info_st scp_region_info_copy;
 extern struct scp_region_info_st *scp_region_info;

@@ -51,13 +51,13 @@ struct scp_feature_tb feature_table[NUM_FEATURE_ID] = {
 	},
 	{
 		.feature	= VCORE_TEST_FEATURE_ID,
-		.freq		= 0,
+		.freq		= 77,
 		.enable		= 0,
 		.sys_id		= SCPSYS_CORE0,
 	},
 	{
 		.feature        = VOW_BARGEIN_FEATURE_ID,
-		.freq           = 120,
+		.freq           = 135,
 		.enable         = 0,
 		.sys_id         = SCPSYS_CORE1,
 	},
@@ -80,31 +80,36 @@ struct scp_feature_tb feature_table[NUM_FEATURE_ID] = {
 		.sys_id         = SCPSYS_CORE1,
 	},
 	{
-		.feature        = VOW_VENDOR_G_FEATURE_ID,
+		.feature        = VOW_VENDOR_SPEECH_FEATURE_ID,
 		.freq           = 22,
 		.enable         = 0,
 		.sys_id         = SCPSYS_CORE1,
 	},
 	{
-		.feature        = VOW_DUAL_MIC_FEATURE_ID,
+		.feature        = VOW_VENDOR_G_FEATURE_ID,
 		.freq           = 20,
 		.enable         = 0,
 		.sys_id         = SCPSYS_CORE1,
 	},
 	{
-		.feature        = VOW_DUAL_MIC_BARGE_IN_FEATURE_ID,
-		.freq           = 135,
+		.feature        = VOW_DUAL_MIC_FEATURE_ID,
+		.freq           = 100,
 		.enable         = 0,
 		.sys_id         = SCPSYS_CORE1,
 	},
-#ifdef CONFIG_MTK_ULTRASND_PROXIMITY
 	{
-		.feature        = ULTRA_FEATURE_ID,
-		.freq           = 200,
+		.feature        = VOW_DUAL_MIC_BARGE_IN_FEATURE_ID,
+		.freq           = 0,
 		.enable         = 0,
 		.sys_id         = SCPSYS_CORE0,
 	},
-#endif
+	/* A12 官方内核: ULTRA 项无条件常驻且初始 enable=1 */
+	{
+		.feature        = ULTRA_FEATURE_ID,
+		.freq           = 200,
+		.enable         = 1,
+		.sys_id         = SCPSYS_CORE0,
+	},
 };
 
 /*scp sensor type list*/

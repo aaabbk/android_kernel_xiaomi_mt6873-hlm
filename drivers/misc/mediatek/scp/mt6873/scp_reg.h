@@ -15,8 +15,8 @@
 #define __SCP_REG_H
 
 #define SCP_SEMAPHORE			(scpreg.cfg  + 0x0018)
-#define SCP_SCP2SPM_VOL_LV              (scpreg.cfg + 0x0020)
-#define SCP_3WAY_SEMAPHORE              (scpreg.cfg + 0x001c)
+#define SCP_3WAY_SEMAPHORE		(scpreg.cfg + 0x001c)
+#define SCP_SCP2SPM_VOL_LV		(scpreg.cfg + 0x0020)
 
 /* SCP to SPM IPC clear */
 #define SCP_TO_SPM_REG			(scpreg.cfg + 0x0094)

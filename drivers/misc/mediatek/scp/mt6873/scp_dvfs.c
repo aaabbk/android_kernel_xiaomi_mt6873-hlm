@@ -67,27 +67,6 @@
 #endif
 #define pr_fmt(fmt)	"[scp_dvfs]: " fmt
 
-/*
- * a12 SCP firmware compatibility fix:
- * 
- * a12固件行为（反汇编确认）：
- * - 直接读取 EXPECTED_FREQ_REG (0x7003004C) 获取目标频率
- * - 直接读取 CURRENT_FREQ_REG (0x70030050) 获取当前频率
- * - 不从IPI消息payload解析频率值
- * - IPI仅作为触发信号，通知固件检查寄存器
- * - 不返回IPI ACK
- *
- * a11内核问题：
- * - scp_request_freq() 发送IPI但未写 EXPECTED_FREQ_REG
- * - 使用 IPI_SEND_WAIT 等待ACK，但固件不返回ACK
- * - 导致 IPI timeout 和 DVFS 失败
- *
- * 修复方案：
- * 1. 发送IPI前，先写 EXPECTED_FREQ_REG
- * 2. 改用非阻塞IPI发送（opt=0）
- * 3. 通过轮询 CURRENT_FREQ_REG 确认DVFS完成
- */
-
 #define DRV_Reg32(addr)	readl(addr)
 #define DRV_WriteReg32(addr, val) writel(val, addr)
 #define DRV_SetReg32(addr, val)	DRV_WriteReg32(addr, DRV_Reg32(addr) | (val))
@@ -117,9 +96,6 @@ static int scp_dvfs_debug_flag = -1;
  */
 static int scp_resrc_req_cmd = -1;
 static int scp_resrc_current_req = -1;
-static u32 scp_slp_cnt;
-
-#define LOG_BUF_SIZE			256
 
 static int pre_pll_sel = -1;
 static struct mt_scp_pll_t *mt_scp_pll;
@@ -127,107 +103,73 @@ static struct wakeup_source scp_suspend_lock;
 static int g_scp_dvfs_init_flag = -1;
 
 static void __iomem *gpio_base;
-
-#if defined(CONFIG_MACH_MT6877)
-#define ADR_GPIO_MODE_OF_SCP_VREQ	(gpio_base + 0x350)
-#define BIT_GPIO_MODE_OF_SCP_VREQ	24
-#else /* !defined(CONFIG_MACH_MT6877) */
-#define ADR_GPIO_MODE_OF_SCP_VREQ	(gpio_base + 0x420)
-#define BIT_GPIO_MODE_OF_SCP_VREQ	4
-#endif /* defined(CONFIG_MACH_MT6877) */
+#define ADR_GPIO_MODE_OF_SCP_VREQ	(gpio_base + 0x480)
+#define BIT_GPIO_MODE_OF_SCP_VREQ	12
 #define MSK_GPIO_MODE_OF_SCP_VREQ	0x7
 
 #if SCP_VCORE_REQ_TO_DVFSRC
 static struct pm_qos_request dvfsrc_scp_vcore_req;
 #endif
 
-unsigned int slp_ipi_ackdata0;
+unsigned int slp_ipi_ackdata0, slp_ipi_ackdata1;
 int slp_ipi_init_done;
-unsigned int sleep_block_cnt[NR_REASONS];
 
 #ifdef ULPOSC_CALI_BY_AP
-#define MAX_ULPOSC_CALI_NUM	3
+static void __iomem *ulposc_base;
 
-#if defined(CONFIG_MACH_MT6833)
+#define ULPOSC2_CON0 (ulposc_base + 0x2C0)
+#define RG_OSC_CALI_MSK		0x7F
+#define RG_OSC_CALI_SHFT	0
+
+#define ULPOSC2_CON1 (ulposc_base + 0x2C4)
+#define ULPOSC2_CON2 (ulposc_base + 0x2C8)
+
+#define CAL_MIN_VAL		0
+#define CAL_MAX_VAL		RG_OSC_CALI_MSK
+
+/* calibation miss rate, unit: 1% */
+#define CAL_MIS_RATE	5
+
+#define MAX_ULPOSC_CALI_NUM	3
 struct ulposc_cali_t ulposc_cfg[MAX_ULPOSC_CALI_NUM] = {
 	{
 		.freq = CLK_OPP0,
-		.ulposc_rg0 = 0x38a940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
+		.ulposc_rg0 = 0x5aa940,
+		.ulposc_rg1 = 0x3002900,
+		.ulposc_rg2 = 0x40,
 		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
 	},
 	{
-		.freq = CLK_OPP1,
+		.freq = CLK_OPP2,
+		.ulposc_rg0 = 0x3ca940,
+		.ulposc_rg1 = 0x2900,
+		.ulposc_rg2 = 0x40,
+		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
+	},
+	{
+		.freq = CLK_OPP3,
 		.ulposc_rg0 = 0x52a940,
 		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-	{
-		.freq = CLK_OPP2,
-		.ulposc_rg0 = 0x5ea940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-};
-#elif defined(CONFIG_MACH_MT6877)
-struct ulposc_cali_t ulposc_cfg[MAX_ULPOSC_CALI_NUM] = {
-	{
-		.freq = CLK_OPP0,
-		.ulposc_rg0 = 0x48a940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-	{
-		.freq = CLK_OPP1,
-		.ulposc_rg0 = 0x56a940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-	{
-		.freq = CLK_OPP2,
-		.ulposc_rg0 = 0x5ea940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x41,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-};
-#else /* !defined(CONFIG_MACH_MT6833) && !defined(CONFIG_MACH_MT6877) */
-struct ulposc_cali_t ulposc_cfg[MAX_ULPOSC_CALI_NUM] = {
-	{
-		.freq = CLK_OPP0,
-		.ulposc_rg0 = 0x38a940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x40,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-	{
-		.freq = CLK_OPP1,
-		.ulposc_rg0 = 0x4ea940,
-		.ulposc_rg1 = 0x2900,
-		.ulposc_rg2 = 0x40,
-		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
-	},
-	{
-		.freq = CLK_OPP2,
-		.ulposc_rg0 = 0x5aa940,
-		.ulposc_rg1 = 0x2900,
 		.ulposc_rg2 = 0x40,
 		.fmeter_id = FREQ_METER_ABIST_AD_OSC_CK_2,
 	},
 };
-#endif /* CONFIG_MACH_MT6833 */
 #endif /* ULPOSC_CALI_BY_AP */
 
 void scp_slp_ipi_init(void)
 {
-	/* Pin registration not needed for fire-and-forget mode.
-	 * ACK data (slp_ipi_ackdata0) is unavailable with new firmware.
-	 */
+	int ret;
+
+	ret = mtk_ipi_register(&scp_ipidev, IPI_OUT_C_SLEEP_0,
+			NULL, NULL, &slp_ipi_ackdata0);
+	if (ret)
+		pr_err("scp0 sleep ipi_register fail, ret %d\n", ret);
+
+	ret = mtk_ipi_register(&scp_ipidev, IPI_OUT_C_SLEEP_1,
+			NULL, NULL, &slp_ipi_ackdata1);
+	if (ret)
+		pr_err("scp1 sleep ipi_register fail, ret %d\n", ret);
+
 	slp_ipi_init_done = 1;
 }
 
@@ -251,6 +193,8 @@ static uint32_t _mt_scp_dvfs_set_test_freq(uint32_t sum)
 		added_freq = CLK_OPP2 - sum;
 	else if (scp_dvfs_debug_flag == 3 && sum < CLK_OPP3)
 		added_freq = CLK_OPP3 - sum;
+	else if (scp_dvfs_debug_flag == 4 && sum < CLK_OPP4)
+		added_freq = CLK_OPP4 - sum;
 
 	feature_table[VCORE_TEST_FEATURE_ID].freq =
 		added_freq;
@@ -276,6 +220,68 @@ int scp_resource_req(unsigned int req_type)
 	if (!ret)
 		scp_resrc_current_req = req_type;
 #endif
+	return ret;
+}
+
+#if 0
+int __attribute__((weak))
+get_vcore_uv_table(int vcore_opp)
+{
+	pr_err("ERROR: %s is not buildin by VCORE DVFS\n", __func__);
+	return 0;
+}
+#endif
+
+int scp_set_pmic_vcore(unsigned int cur_freq)
+{
+	int ret = 0;
+#if !defined(CONFIG_FPGA_EARLY_PORTING)
+	unsigned int ret_vc = 0;
+	int get_vcore_val = 0;
+
+	if (cur_freq == CLK_OPP0) {
+		get_vcore_val = get_vcore_uv_table(VCORE_OPP_3);
+	} else if (cur_freq == CLK_OPP1) {
+		get_vcore_val = get_vcore_uv_table(VCORE_OPP_2);
+	} else if (cur_freq == CLK_OPP2) {
+		get_vcore_val = get_vcore_uv_table(VCORE_OPP_1);
+	}  else if (cur_freq == CLK_OPP3 || cur_freq == CLK_OPP4) {
+		get_vcore_val = get_vcore_uv_table(VCORE_OPP_0);
+	} else {
+		ret = -2;
+		pr_err("ERROR: %s: cur_freq=%d is not supported\n",
+			__func__, cur_freq);
+		WARN_ON(1);
+	}
+
+	if (get_vcore_val != 0) {
+		pr_debug("get_vcore_val = %d\n", get_vcore_val);
+		ret_vc = pmic_scp_set_vcore(get_vcore_val);
+	} else {
+		pr_err("ERROR: %s: get_vcore_uv_table(%d) fail\n",
+			__func__, cur_freq);
+		WARN_ON(1);
+	}
+
+	if (ret_vc) {
+		ret = -1;
+		pr_err("ERROR: %s: scp vcore setting error, (%d)\n",
+					__func__, ret_vc);
+		WARN_ON(1);
+	}
+
+#if SCP_VOW_LOW_POWER_MODE
+	if (cur_freq == CLK_OPP0 || cur_freq == CLK_OPP1) {
+		/* enable VOW low power mode */
+		pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_LP);
+	} else {
+		/* disable VOW low power mode */
+		pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_OFF);
+	}
+#endif
+
+#endif /* CONFIG_FPGA_EARLY_PORTING */
+
 	return ret;
 }
 
@@ -328,77 +334,27 @@ uint32_t scp_get_freq(void)
 		return_freq = CLK_OPP2;
 	else if (sum <= CLK_OPP3)
 		return_freq = CLK_OPP3;
+	else if (sum <= CLK_OPP4)
+		return_freq = CLK_OPP4;
 	else {
-		return_freq = CLK_OPP3;
+		return_freq = CLK_OPP4;
 		pr_debug("warning: request freq %d > max opp %d\n",
-				sum, CLK_OPP3);
+				sum, CLK_OPP4);
 	}
 
 	return return_freq;
 }
 
-#if defined(CONFIG_MACH_MT6877) && !defined(CONFIG_FPGA_EARLY_PORTING)
-int scp_set_pmic_vcore(unsigned int clk_freq)
-{
-	int ret = 0;
-	unsigned int ret_vc = 0;
-	int get_vcore_val = 0;
-
-	if (clk_freq == CLK_OPP0) {
-		get_vcore_val = get_vcore_uv_table(VCORE_OPP_4);
-	} else if (clk_freq == CLK_OPP1) {
-		get_vcore_val = get_vcore_uv_table(VCORE_OPP_3);
-	} else if (clk_freq == CLK_OPP2) {
-		get_vcore_val = get_vcore_uv_table(VCORE_OPP_2);
-	} else if (clk_freq == CLK_OPP3) {
-		get_vcore_val = get_vcore_uv_table(VCORE_OPP_1);
-	} else {
-		pr_err("ERROR: %s: clk_freq=%d is not supported\n",
-			__func__, clk_freq);
-		return -ENODEV;
-	}
-
-	if (get_vcore_val != 0) {
-		pr_debug("get_vcore_val = %d\n", get_vcore_val);
-		ret_vc = pmic_scp_set_vcore(get_vcore_val);
-	} else {
-		pr_err("ERROR: %s: get_vcore_uv_table(%d) fail\n",
-			__func__, clk_freq);
-		WARN_ON(1);
-	}
-
-	if (ret_vc) {
-		ret = -1;
-		pr_err("ERROR: %s: scp vcore setting error, (%d)\n",
-					__func__, ret_vc);
-		WARN_ON(1);
-	}
-
-#if SCP_VOW_LOW_POWER_MODE
-	if (clk_freq == CLK_OPP0 || clk_freq == CLK_OPP1) {
-		/* enable VOW low power mode */
-		pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_LP);
-	} else {
-		/* disable VOW low power mode */
-		pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_OFF);
-	}
-#endif /* SCP_VOW_LOW_POWER_MODE */
-
-	return ret;
-}
-#endif /* defined(CONFIG_MACH_MT6877) && !defined(CONFIG_FPGA_EARLY_PORTING) */
-
 void scp_vcore_request(unsigned int clk_opp)
 {
 	pr_debug("%s(%d)\n", __func__, clk_opp);
 
-#if defined(CONFIG_MACH_MT6877) && !defined(CONFIG_FPGA_EARLY_PORTING)
+	/* Set PMIC */
 	scp_set_pmic_vcore(clk_opp);
-#endif /* defined(CONFIG_MACH_MT6877) && !defined(CONFIG_FPGA_EARLY_PORTING) */
 
 #if SCP_VCORE_REQ_TO_DVFSRC
 	/* DVFSRC_VCORE_REQUEST [31:30]
-	 * 2'b00: scp request 0.55v
+	 * 2'b00: scp request 0.575v
 	 * 2'b01: scp request 0.6v
 	 * 2'b10: scp request 0.65v
 	 * 2'b11: scp request 0.725v
@@ -411,27 +367,22 @@ void scp_vcore_request(unsigned int clk_opp)
 		pm_qos_update_request(&dvfsrc_scp_vcore_req, 0x2);
 	else
 		pm_qos_update_request(&dvfsrc_scp_vcore_req, 0x3);
-#endif /* SCP_VCORE_REQ_TO_DVFSRC */
+#endif
 
-#if !defined(CONFIG_MACH_MT6877) && !defined(CONFIG_MTK_DVFSRC_MT6877_PRETEST)
+	/* SCP to SPM voltage level
+	 * 2'b0000_0000_1000: scp request 0.575v
+	 * 2'b0001_0000_0100: scp request 0.6v
+	 * 2'b0010_0000_0010: scp request 0.65v
+	 * 2'b0011_0000_0001: scp request 0.725v
+	 */
 	if (clk_opp == CLK_OPP0)
-		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x008);
+		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x8);
 	else if (clk_opp == CLK_OPP1)
 		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x104);
 	else if (clk_opp == CLK_OPP2)
 		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x202);
 	else
 		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x301);
-#else
-	if (clk_opp == CLK_OPP0)
-		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x010);
-	else if (clk_opp == CLK_OPP1)
-		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x108);
-	else if (clk_opp == CLK_OPP2)
-		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x204);
-	else
-		DRV_WriteReg32(SCP_SCP2SPM_VOL_LV, 0x302);
-#endif
 }
 
 /* scp_request_freq
@@ -452,14 +403,6 @@ int scp_request_freq(void)
 		pr_debug("warning: SCP DVFS is OFF\n");
 		return 0;
 	}
-
-	/*
-	 * a12固件兼容性修复：
-	 * 计算期望频率并写EXPECTED_FREQ_REG，让固件能读到
-	 * 固件直接读寄存器，不从IPI消息解析频率
-	 */
-	scp_expected_freq = scp_get_freq();
-	writel(scp_expected_freq, EXPECTED_FREQ_REG);
 
 	/* because we are waiting for scp to update register:scp_current_freq
 	 * use wake lock to prevent AP from entering suspend state
@@ -486,14 +429,9 @@ int scp_request_freq(void)
 		value = scp_expected_freq;
 
 		do {
-			/*
-			 * a12固件不解析IPI payload，也不返回ACK
-			 * IPI仅作为触发信号，通知固件检查EXPECTED_FREQ_REG
-			 * 使用opt=0（非阻塞），不等待ACK
-			 */
 			ret = mtk_ipi_send(&scp_ipidev,
 					IPI_OUT_DVFS_SET_FREQ_0,
-					0, &value,  /* opt=0, 不等待ACK */
+					IPI_SEND_WAIT, &value,
 					PIN_OUT_SIZE_DVFS_SET_FREQ_0, 0);
 			if (ret != IPI_ACTION_DONE)
 				pr_debug("SCP send IPI fail - %d\n", ret);
@@ -523,7 +461,7 @@ int scp_request_freq(void)
 		/* release scp to sleep after ap freq drop request */
 		scp_awake_unlock((void *)SCP_A_ID);
 
-		if (scp_expected_freq == (unsigned int)CLK_OPP3)
+		if (scp_expected_freq == (unsigned int)CLK_OPP4)
 			/* request SPM not to turn off 26M/infra */
 			scp_resource_req(SCP_REQ_26M | SCP_REQ_IFR);
 		else
@@ -584,7 +522,7 @@ int scp_pll_ctrl_set(unsigned int pll_ctrl_flag, unsigned int pll_sel)
 	pr_debug("%s(%d, %d)\n", __func__, pll_ctrl_flag, pll_sel);
 
 	if (pll_ctrl_flag == PLL_ENABLE) {
-		if (pre_pll_sel != CLK_OPP3) {
+		if (pre_pll_sel != CLK_OPP4) {
 			ret = clk_prepare_enable(mt_scp_pll->clk_mux);
 			if (ret) {
 				pr_err("clk_prepare_enable() failed\n");
@@ -595,26 +533,35 @@ int scp_pll_ctrl_set(unsigned int pll_ctrl_flag, unsigned int pll_sel)
 		}
 
 		switch (pll_sel) {
-		case CLK_26M:
-		case CLK_OPP0: /* 26 MHz */
+		case CLK_26M:		/* 26 MHz */
 			ret = clk_set_parent(
 					mt_scp_pll->clk_mux,
 					mt_scp_pll->clk_pll0);
 			break;
-		case CLK_OPP1: /* 312 MHz, MAINPLL */
+		case CLK_OPP0:		/* 182, MAINPLL */
+			ret = clk_set_parent(
+					mt_scp_pll->clk_mux,
+					mt_scp_pll->clk_pll2);
+			break;
+		case CLK_OPP1:		/* 273M, MAINPLL */
+			ret = clk_set_parent(
+					mt_scp_pll->clk_mux,
+					mt_scp_pll->clk_pll5);
+			break;
+		case CLK_OPP2:		/* 312 MHz, MAINPLL */
 			ret = clk_set_parent(
 					mt_scp_pll->clk_mux,
 					mt_scp_pll->clk_pll7);
 			break;
-		case CLK_OPP2: /* 364 MHz, MAINPLL */
+		case CLK_OPP3:		/* 364 MHz, MAINPLL */
 			ret = clk_set_parent(
 					mt_scp_pll->clk_mux,
 					mt_scp_pll->clk_pll3);
 			break;
-		case CLK_OPP3: /* 624 MHz, UNIVPLL */
+		case CLK_OPP4:		/* 416 MHz, UNIVPLL */
 			ret = clk_set_parent(
 					mt_scp_pll->clk_mux,
-					mt_scp_pll->clk_pll1);
+					mt_scp_pll->clk_pll4);
 			break;
 		default:
 			pr_err("not support opp freq %d\n", pll_sel);
@@ -632,7 +579,7 @@ int scp_pll_ctrl_set(unsigned int pll_ctrl_flag, unsigned int pll_sel)
 			pre_pll_sel = pll_sel;
 
 	} else if (pll_ctrl_flag == PLL_DISABLE
-				&& pll_sel != CLK_OPP3) {
+				&& pll_sel != CLK_OPP4) {
 		clk_disable_unprepare(mt_scp_pll->clk_mux);
 		pr_debug("clk_disable_unprepare()\n");
 	} else {
@@ -650,7 +597,7 @@ int scp_pll_ctrl_set(unsigned int pll_ctrl_flag, unsigned int pll_sel)
 /****************************
  * show SCP state
  *****************************/
-static int mt_scp_state_proc_show(struct seq_file *m, void *v)
+static int mt_scp_dvfs_state_proc_show(struct seq_file *m, void *v)
 {
 	unsigned int scp_state;
 
@@ -833,6 +780,84 @@ static ssize_t mt_scp_sleep_ctrl0_proc_write(
 }
 
 /****************************
+ * show scp sleep ctrl1
+ *****************************/
+static int mt_scp_sleep_ctrl1_proc_show(struct seq_file *m, void *v)
+{
+	int ret;
+	struct ipi_tx_data_t ipi_data;
+
+	if (!slp_ipi_init_done)
+		scp_slp_ipi_init();
+
+	ipi_data.arg1 = SLP_DBG_CMD_GET_FLAG;
+	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_1,
+		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_1, 500);
+	if (ret != IPI_ACTION_DONE)
+		seq_printf(m, "ipi fail, ret = %d\n", ret);
+	else {
+		if (slp_ipi_ackdata1 >= SCP_SLEEP_OFF &&
+			slp_ipi_ackdata1 <= SLP_DBG_CMD_SET_NO_CONDITION)
+			seq_printf(m, "SCP Sleep flag = %d\n",
+				slp_ipi_ackdata1);
+		else
+			seq_printf(m, "invalid SCP Sleep flag = %d\n",
+				slp_ipi_ackdata1);
+	}
+
+	return 0;
+}
+
+/**********************************
+ * write scp sleep ctrl1
+ ***********************************/
+static ssize_t mt_scp_sleep_ctrl1_proc_write(
+					struct file *file,
+					const char __user *buffer,
+					size_t count,
+					loff_t *data)
+{
+	char desc[64];
+	unsigned int val = 0;
+	unsigned int len = 0;
+	int ret = 0;
+	struct ipi_tx_data_t ipi_data;
+
+	if (!slp_ipi_init_done)
+		scp_slp_ipi_init();
+
+	if (count <= 0)
+		return 0;
+
+	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
+	if (copy_from_user(desc, buffer, len))
+		return 0;
+	desc[len] = '\0';
+
+	if (kstrtouint(desc, 10, &val) == 0) {
+		if (val >= SCP_SLEEP_OFF &&
+			val <= SCP_SLEEP_NO_CONDITION) {
+			ipi_data.arg1 = val;
+			ret = mtk_ipi_send_compl(&scp_ipidev,
+						IPI_OUT_C_SLEEP_1,
+						IPI_SEND_WAIT,
+						&ipi_data,
+						PIN_OUT_C_SIZE_SLEEP_1,
+						500);
+			if (ret != IPI_ACTION_DONE)
+				pr_err("%s: mtk_ipi_send_compl fail, ret=%d\n",
+					__func__, ret);
+		} else {
+			pr_info("Warning: invalid input value %d\n", val);
+		}
+	} else {
+		pr_info("Warning: invalid input command, val=%d\n", val);
+	}
+
+	return count;
+}
+
+/****************************
  * show scp sleep cnt0
  *****************************/
 static int mt_scp_sleep_cnt0_proc_show(struct seq_file *m, void *v)
@@ -898,121 +923,70 @@ static ssize_t mt_scp_sleep_cnt0_proc_write(
 	return count;
 }
 
-static int __mt_scp_res_cnt0_show(struct seq_file *m)
-{
-	int ret;
-	u32 ipi_data[2];
-
-	if (!slp_ipi_init_done)
-		scp_slp_ipi_init();
-
-	ipi_data[0] = SLP_DBG_CMD_RES_ON_CNT_GET;
-	ipi_data[1] = 0;
-
-	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
-	if (ret != IPI_ACTION_DONE)
-		seq_printf(m, "scp ipi fail, ret = %d\n", ret);
-
-	seq_printf(m, "scp_apsrc_on_cnt = %u\n",
-		(slp_ipi_ackdata0 >> APSRC_CNT_SHIFT) & APSRC_CNT_MASK);
-	seq_printf(m, "scp_apsrc_cur_on_sta = %u\n",
-		(slp_ipi_ackdata0 >> APSRC_ON_SHIFT) & APSRC_ON_MASK);
-	seq_printf(m, "scp_infra_on_cnt = %u\n",
-		(slp_ipi_ackdata0 >> INFRA_CNT_SHIFT) & INFRA_CNT_MASK);
-	seq_printf(m, "scp_infra_cur_on_sta = %u\n",
-		(slp_ipi_ackdata0 >> INFRA_ON_SHIFT) & INFRA_ON_MASK);
-
-	return 0;
-}
-
-static int __mt_scp_res_apsrc_on_max_time_show(struct seq_file *m)
-{
-	int ret;
-	u32 ipi_data[2];
-
-	if (!slp_ipi_init_done)
-		scp_slp_ipi_init();
-
-	ipi_data[0] = SLP_DBG_CMD_APSRC_MAX_TIME_GET;
-	ipi_data[1] = 0;
-
-	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
-	if (ret != IPI_ACTION_DONE)
-		seq_printf(m, "scp ipi fail, ret = %d\n", ret);
-
-	seq_printf(m, "scp apsrc on time between polling = %ums\n",
-		slp_ipi_ackdata0);
-
-	return 0;
-}
-
-static int __mt_scp_res_infra_on_max_time_show(struct seq_file *m)
-{
-	int ret;
-	u32 ipi_data[2];
-
-	if (!slp_ipi_init_done)
-		scp_slp_ipi_init();
-
-	ipi_data[0] = SLP_DBG_CMD_INFRA_MAX_TIME_GET;
-	ipi_data[1] = 1;
-
-	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
-	if (ret != IPI_ACTION_DONE)
-		seq_printf(m, "scp ipi fail, ret = %d\n", ret);
-	seq_printf(m, "scp infra on time between polling = %ums\n",
-		slp_ipi_ackdata0);
-
-	return 0;
-}
-
 /****************************
- * show scp resource request cnt0
+ * show scp sleep cnt1
  *****************************/
-static int mt_scp_res_req_cnt0_proc_show(struct seq_file *m, void *v)
+static int mt_scp_sleep_cnt1_proc_show(struct seq_file *m, void *v)
 {
-	__mt_scp_res_cnt0_show(m);
-	__mt_scp_res_apsrc_on_max_time_show(m);
-	__mt_scp_res_infra_on_max_time_show(m);
-
-	return 0;
-}
-
-/****************************
- * show scp sleep block reason
- *****************************/
-static int mt_scp_sleep_block_proc_show(struct seq_file *m, void *v)
-{
-	int i;
 	int ret;
 	struct ipi_tx_data_t ipi_data;
 
 	if (!slp_ipi_init_done)
 		scp_slp_ipi_init();
 
-	for (i = 0; i < NR_REASONS; i++) {
-		sleep_block_cnt[i] = 0;
-		ipi_data.arg1 = SLP_DBG_CMD_BLOCK_BY_TIMER_CNT + i;
-
-		ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-			IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
-		if (ret != IPI_ACTION_DONE)
-			seq_printf(m, "ipi fail, ret = %d\n", ret);
-		else
-			sleep_block_cnt[i] = slp_ipi_ackdata0;
-	}
-
-	seq_printf(m, "no sleep reasons: tmr=%u, build=%u, sema=%u, lock=%u, ipi=%u, irq=%u, flag=%u, slpbusy=%u, hard1=%u\n",
-		sleep_block_cnt[BY_TIMER], sleep_block_cnt[BY_COMPILER],
-		sleep_block_cnt[BY_SEMAPHORE], sleep_block_cnt[BY_WAKELOCK],
-		sleep_block_cnt[BY_IPI_BUSY], sleep_block_cnt[BY_PENDING_IRQ],
-		sleep_block_cnt[BY_SLP_DISABLED], sleep_block_cnt[BY_SLP_BUSY],
-		sleep_block_cnt[BY_HARD1_BUSY]);
+	ipi_data.arg1 = SLP_DBG_CMD_GET_CNT;
+	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_1,
+		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_1, 500);
+	if (ret != IPI_ACTION_DONE)
+		seq_printf(m, "ipi fail, ret = %d\n", ret);
+	else
+		seq_printf(m, "scp_sleep_cnt = %d\n", slp_ipi_ackdata1);
 
 	return 0;
+}
+
+/**********************************
+ * write scp sleep cnt1
+ ***********************************/
+static ssize_t mt_scp_sleep_cnt1_proc_write(
+					struct file *file,
+					const char __user *buffer,
+					size_t count,
+					loff_t *data)
+{
+	char desc[64];
+	unsigned int val = 0;
+	unsigned int len = 0;
+	int ret = 0;
+	struct ipi_tx_data_t ipi_data;
+
+	if (!slp_ipi_init_done)
+		scp_slp_ipi_init();
+
+	if (count <= 0)
+		return 0;
+
+	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
+	if (copy_from_user(desc, buffer, len))
+		return 0;
+	desc[len] = '\0';
+
+	if (kstrtouint(desc, 10, &val) == 0) {
+		ipi_data.arg1 = SLP_DBG_CMD_RESET;
+		ret = mtk_ipi_send_compl(&scp_ipidev,
+					IPI_OUT_C_SLEEP_1,
+					IPI_SEND_WAIT,
+					&ipi_data,
+					PIN_OUT_C_SIZE_SLEEP_1,
+					500);
+		if (ret != IPI_ACTION_DONE)
+			pr_err("%s: mtk_ipi_send_compl fail, ret=%d\n",
+				__func__, ret);
+	} else {
+		pr_info("Warning: invalid input command, val=%d\n", val);
+	}
+
+	return count;
 }
 
 /****************************
@@ -1124,13 +1098,13 @@ static const struct file_operations mt_ ## name ## _proc_fops = {\
 
 #define PROC_ENTRY(name)	{__stringify(name), &mt_ ## name ## _proc_fops}
 
-PROC_FOPS_RO(scp_state);
+PROC_FOPS_RO(scp_dvfs_state);
 PROC_FOPS_RW(scp_dvfs_ctrl);
 PROC_FOPS_RW(scp_sleep_ctrl0);
+PROC_FOPS_RW(scp_sleep_ctrl1);
 PROC_FOPS_RW(scp_sleep_cnt0);
-PROC_FOPS_RO(scp_sleep_block);
+PROC_FOPS_RW(scp_sleep_cnt1);
 PROC_FOPS_RW(scp_resrc_req);
-PROC_FOPS_RO(scp_res_req_cnt0);
 
 static int mt_scp_dvfs_create_procfs(void)
 {
@@ -1143,13 +1117,13 @@ static int mt_scp_dvfs_create_procfs(void)
 	};
 
 	const struct pentry entries[] = {
-		PROC_ENTRY(scp_state),
+		PROC_ENTRY(scp_dvfs_state),
 		PROC_ENTRY(scp_dvfs_ctrl),
 		PROC_ENTRY(scp_sleep_ctrl0),
+		PROC_ENTRY(scp_sleep_ctrl1),
 		PROC_ENTRY(scp_sleep_cnt0),
-		PROC_ENTRY(scp_sleep_block),
+		PROC_ENTRY(scp_sleep_cnt1),
 		PROC_ENTRY(scp_resrc_req),
-		PROC_ENTRY(scp_res_req_cnt0),
 	};
 
 	dir = proc_mkdir("scp_dvfs", NULL);
@@ -1194,39 +1168,206 @@ static int mt_scp_dvfs_pm_restore_early(struct device *dev)
 }
 
 #ifdef ULPOSC_CALI_BY_AP
+static void turn_onoff_clk_high(int id, int is_on)
+{
+	pr_debug("%s(%d, %d)\n", __func__, id, is_on);
+
+	if (is_on) {
+		/* turn on ulposc */
+		DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
+		if (id == ULPOSC_2)
+			DRV_ClrReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
+
+		/* wait settle time */
+		udelay(150);
+
+		/* turn on CG */
+		if (id == ULPOSC_2)
+			DRV_SetReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
+		else
+			DRV_SetReg32(CLK_ENABLE, (1 << CLK_HIGH_CG_BIT));
+	} else {
+		/* turn off CG */
+		if (id == ULPOSC_2)
+			DRV_ClrReg32(CLK_HIGH_CORE, (1 << HIGH_CORE_CG_BIT));
+		else
+			DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_CG_BIT));
+
+		udelay(50);
+
+		/* turn off ULPOSC */
+		if (id == ULPOSC_2)
+			DRV_SetReg32(CLK_ON_CTRL, (1 << HIGH_CORE_DIS_SUB_BIT));
+		else
+			DRV_ClrReg32(CLK_ENABLE, (1 << CLK_HIGH_EN_BIT));
+	}
+
+	udelay(50);
+}
+
+static void set_ulposc_cali_value(unsigned int cali_val)
+{
+	unsigned int val;
+
+	val = DRV_Reg32(ULPOSC2_CON0) & ~(RG_OSC_CALI_MSK << RG_OSC_CALI_SHFT);
+	val = (val | ((cali_val & RG_OSC_CALI_MSK) << RG_OSC_CALI_SHFT));
+	DRV_WriteReg32(ULPOSC2_CON0, val);
+
+	udelay(50);
+}
+
+static unsigned int ulposc_cali_process(int idx)
+{
+	unsigned int target_val = 0, current_val = 0;
+	unsigned int min = CAL_MIN_VAL, max = CAL_MAX_VAL, middle;
+	unsigned int diff_by_min = 0, diff_by_max = 0xffff;
+	unsigned int cal_result = 0;
+
+	target_val = ulposc_cfg[idx].freq * 1000;
+
+	do {
+		middle = (min + max) / 2;
+		if (middle == min) {
+			pr_debug("middle(%d) == min(%d)\n", middle, min);
+			break;
+		}
+
+		set_ulposc_cali_value(middle);
+		current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
+
+		if (current_val > target_val)
+			max = middle;
+		else
+			min = middle;
+	} while (min <= max);
+
+	set_ulposc_cali_value(min);
+	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
+	if (current_val > target_val)
+		diff_by_min = current_val - target_val;
+	else
+		diff_by_min = target_val - current_val;
+
+	set_ulposc_cali_value(max);
+	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
+	if (current_val > target_val)
+		diff_by_max = current_val - target_val;
+	else
+		diff_by_max = target_val - current_val;
+
+	if (diff_by_min < diff_by_max)
+		cal_result = min;
+	else
+		cal_result = max;
+
+	set_ulposc_cali_value(cal_result);
+	current_val = mt_get_abist_freq(ulposc_cfg[idx].fmeter_id);
+
+	/* check if calibrated value is in the range of target value +- 4% */
+	if ((current_val < (target_val * (100 - CAL_MIS_RATE) / 100)) ||
+		(current_val > (target_val * (100 + CAL_MIS_RATE) / 100))) {
+		pr_err("calibration fail, target=%dMHz, calibrated=%dMHz\n",
+				target_val/1000, current_val/1000);
+		return 0;
+	}
+
+	pr_info("calibration done, target=%dMHz, calibrated=%dMHz\n",
+				target_val/1000, current_val/1000);
+
+	return cal_result;
+}
+
 void ulposc_cali_init(void)
 {
+	struct device_node *node;
+	int i;
+
 	pr_info("%s\n", __func__);
 
-	/*
-	 * Official kernel uses SMC calls to ATF for ULPOSC calibration.
-	 * Sub-commands 0x10000000-0x30000000 configure and calibrate
-	 * ULPOSC2 for OPP0-OPP2 respectively. ATF handles everything
-	 * in EL3 secure world (register access, RG config, calibration).
-	 */
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x10000000, 0);
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x20000000, 0);
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x30000000, 0);
+	/* get ULPOSC base address */
+	node = of_find_compatible_node(NULL, NULL,
+			"mediatek,apmixed");
+	if (!node) {
+		pr_err("error: can't find apmixedsys node\n");
+		WARN_ON(1);
+		return;
+	}
+
+	ulposc_base = of_iomap(node, 0);
+	if (!ulposc_base) {
+		pr_err("error: iomap fail for ulposc_base\n");
+		WARN_ON(1);
+		return;
+	}
+
+	for (i = 0; i < MAX_ULPOSC_CALI_NUM; i++) {
+		/* turn off ULPOSC2 */
+		turn_onoff_clk_high(ULPOSC_2, 0);
+
+		/* init ULPOSC RGs */
+		DRV_WriteReg32(ULPOSC2_CON0, ulposc_cfg[i].ulposc_rg0);
+		DRV_WriteReg32(ULPOSC2_CON1, ulposc_cfg[i].ulposc_rg1);
+		DRV_WriteReg32(ULPOSC2_CON2, ulposc_cfg[i].ulposc_rg2);
+
+		/* turn on ULPOSC2 */
+		turn_onoff_clk_high(ULPOSC_2, 1);
+
+		pr_debug("ULPOSC2: CON0=0x%x, CON1=0x%x, CON2=0x%x\n",
+			DRV_Reg32(ULPOSC2_CON0),
+			DRV_Reg32(ULPOSC2_CON1),
+			DRV_Reg32(ULPOSC2_CON2));
+
+		ulposc_cfg[i].cali_val = (unsigned short)ulposc_cali_process(i);
+		if (!ulposc_cfg[i].cali_val) {
+			pr_err("Error: calibrate ULPOSC2 to %dM fail\n",
+					ulposc_cfg[i].freq);
+			break;
+		}
+	}
+
+	/* turn off ULPOSC2 */
+	turn_onoff_clk_high(ULPOSC_2, 0);
 }
 
 void sync_ulposc_cali_data_to_scp(void)
 {
-	/*
-	 * Official kernel uses SMC calls to ATF for syncing ULPOSC calibration
-	 * data to SCP. Sub-commands 0x60000000-0x90000000 handle the sync:
-	 *   0x60000000 — sync calibration data for OPP0
-	 *   0x70000000 — sync calibration data for OPP1
-	 *   0x80000000 — sync calibration data for OPP2
-	 *   0x90000000 — commit / finalize sync
-	 *
-	 * This replaces the old IPI-based approach (mtk_ipi_send_compl) which
-	 * sent {freq, cali_val} pairs to SCP via mailbox. The new SCP firmware
-	 * expects calibration data to be delivered via ATF SMC, not IPI.
-	 */
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x60000000, 0);
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x70000000, 0);
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x80000000, 0);
-	mt_secure_call(MTK_SIP_KERNEL_SCP_DVFS_CTRL, 0, 4, 0x90000000, 0);
+	int i, ret;
+	unsigned int ipi_data[2];
+	unsigned short *ptrTmp = (unsigned short *)&ipi_data[1];
+
+	if (!slp_ipi_init_done)
+		scp_slp_ipi_init();
+
+	ipi_data[0] = SLP_DBG_CMD_ULPOSC_CALI_VAL;
+
+	for (i = 0; i < MAX_ULPOSC_CALI_NUM; i++) {
+		*ptrTmp = ulposc_cfg[i].freq;
+		*(ptrTmp+1) = ulposc_cfg[i].cali_val;
+
+		pr_info("ipi to scp: freq=%d, cali_val=0x%x\n",
+			ulposc_cfg[i].freq, ulposc_cfg[i].cali_val);
+
+		ret = mtk_ipi_send_compl(&scp_ipidev,
+					IPI_OUT_C_SLEEP_0,
+					IPI_SEND_WAIT,
+					&ipi_data[0],
+					PIN_OUT_C_SIZE_SLEEP_0,
+					500);
+		if (ret != IPI_ACTION_DONE) {
+			pr_err("mtk_ipi_send_compl ULPOSC2_CALI_VAL(%d,%d) fail\n",
+					ulposc_cfg[i].freq,
+					ulposc_cfg[i].cali_val);
+			WARN_ON(1);
+		}
+	}
+
+	/* check if SCP clock is switched to ULPOSC */
+	if ((((DRV_Reg32(CLK_SW_SEL)>>CLK_SW_SEL_O_BIT) & CLK_SW_SEL_O_MASK) &
+		 (CLK_SW_SEL_O_ULPOSC_CORE | CLK_SW_SEL_O_ULPOSC_PERI)) == 0) {
+		pr_err("Error: SCP clock is not switched to ULPOSC, CLK_SW_SEL=0x%x\n",
+			DRV_Reg32(CLK_SW_SEL));
+		WARN_ON(1);
+	}
 }
 #endif /* ULPOSC_CALI_BY_AP */
 
@@ -1367,33 +1508,25 @@ static struct platform_driver mt_scp_dvfs_pdrv = {
 void mt_pmic_sshub_init(void)
 {
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
-#if !defined(CONFIG_MACH_MT6877)
-	pmic_buck_vcore_lp(SRCLKEN11, 0, 1, HW_OFF);
 
-	pr_debug("BUCK_VCORE_HW11_OP: MODE=0x%x, CFG=0x%x, EN=0x%x\n",
-		(int)pmic_get_register_value(PMIC_RG_BUCK_VCORE_HW11_OP_MODE),
-		(int)pmic_get_register_value(PMIC_RG_BUCK_VCORE_HW11_OP_CFG),
-		(int)pmic_get_register_value(PMIC_RG_BUCK_VCORE_HW11_OP_EN));
-#else /* defined(CONFIG_MACH_MT6877) */
 	/* set SCP VCORE voltage */
-	if (pmic_scp_set_vcore(550000) != 0)
+	if (pmic_scp_set_vcore(575000) != 0)
 		pr_notice("Set wrong vcore voltage\n");
 
 #if SCP_VOW_LOW_POWER_MODE
 	/* enable VOW low power mode */
 	pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_LP);
-#else /* !SCP_VOW_LOW_POWER_MODE */
+#else
 	/* disable VOW low power mode */
 	pmic_buck_vgpu11_lp(SRCLKEN11, 0, 1, HW_OFF);
-#endif /* SCP_VOW_LOW_POWER_MODE */
+#endif
 
 	/* BUCK_VCORE_SSHUB_EN: ON */
 	/* LDO_VSRAM_OTHERS_SSHUB_EN: OFF */
 	/* pmrc_mode: OFF */
 	pmic_scp_ctrl_enable(true, false, false);
 
-#endif /* !defined(CONFIG_MACH_MT6877) */
-#endif /* !defined(CONFIG_FPGA_EARLY_PORTING) */
+#endif /* CONFIG_FPGA_EARLY_PORTING */
 }
 
 #ifdef CONFIG_PM
@@ -1411,44 +1544,23 @@ static int mt_scp_dump_sleep_count(void)
 		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
 	if (ret != IPI_ACTION_DONE)
 		printk_deferred("[name:scp&][%s:%d] - scp ipi fail, ret = %d\\n",
-			__func__, __LINE__, ret);
+		__func__, __LINE__, ret);
+	else
+		printk_deferred("[name:scp&][%s:%d] - scp_sleep_cnt_0 = %d\n",
+		__func__, __LINE__, slp_ipi_ackdata0);
 
-	scp_slp_cnt = slp_ipi_ackdata0;
-	return 0;
-}
-
-static int mt_scp_dump_res_on_count(void)
-{
-	char log_buf[LOG_BUF_SIZE] = { 0 };
-	u32 apsrc_on_cnt;
-	u32 infra_on_cnt;
-	u32 ipi_data[2];
-	int log_size = 0;
-	int ret;
-
-	if (!slp_ipi_init_done)
-		scp_slp_ipi_init();
-
-	ipi_data[0] = SLP_DBG_CMD_RES_ON_CNT_GET;
-	ipi_data[1] = 0;
-
-	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_0,
-		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_0, 500);
+	ret = mtk_ipi_send_compl(&scp_ipidev, IPI_OUT_C_SLEEP_1,
+		IPI_SEND_WAIT, &ipi_data, PIN_OUT_C_SIZE_SLEEP_1, 500);
 	if (ret != IPI_ACTION_DONE)
-		log_size += scnprintf(log_buf + log_size,
-			LOG_BUF_SIZE - log_size, " scp_src_cnt fail");
+		printk_deferred("[name:scp&][%s:%d] - scp ipi fail, ret = %d\\n",
+		__func__, __LINE__, ret);
+	else
+		printk_deferred("[name:scp&][%s:%d] - scp_sleep_cnt_1 = %d\n",
+		__func__, __LINE__, slp_ipi_ackdata1);
 
-	apsrc_on_cnt = ((slp_ipi_ackdata0 >> APSRC_CNT_SHIFT) & APSRC_CNT_MASK);
-	infra_on_cnt = ((slp_ipi_ackdata0 >> INFRA_CNT_SHIFT) & INFRA_CNT_MASK);
-
-	log_size += scnprintf(log_buf + log_size, LOG_BUF_SIZE - log_size,
-		"scp0 sleep state: %u,%u,%u\n",
-		scp_slp_cnt, apsrc_on_cnt, infra_on_cnt);
-
-	WARN_ON(strlen(log_buf) >= LOG_BUF_SIZE);
-	pr_info("[name:spm&][SPM] %s", log_buf);
 	return 0;
 }
+
 
 static int mt6873_scp_pm_event(struct notifier_block *notifier,
 			unsigned long pm_event, void *unused)
@@ -1464,7 +1576,6 @@ static int mt6873_scp_pm_event(struct notifier_block *notifier,
 	case PM_POST_SUSPEND:
 		/* show scp sleep count */
 		mt_scp_dump_sleep_count();
-		mt_scp_dump_res_on_count();
 		return NOTIFY_DONE;
 	}
 	return NOTIFY_OK;
